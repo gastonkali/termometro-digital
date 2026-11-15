@@ -20,6 +20,23 @@ os.makedirs(PDF_OUTPUT_DIR, exist_ok=True)
 
 
 def encontrar_ejecutable_navegador() -> Optional[str]:
+    import glob, shutil
+    # Linux / Mac commands in PATH
+    for cmd in ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "brave-browser", "microsoft-edge"]:
+        path = shutil.which(cmd)
+        if path:
+            return path
+
+    # Playwright cached chromium
+    pw_paths = glob.glob(os.path.expanduser("~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome"))
+    if pw_paths and os.path.exists(pw_paths[0]):
+        return pw_paths[0]
+
+    pw_headless = glob.glob(os.path.expanduser("~/.cache/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell"))
+    if pw_headless and os.path.exists(pw_headless[0]):
+        return pw_headless[0]
+
+    # Windows paths
     candidatos = [
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",

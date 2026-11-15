@@ -31,16 +31,24 @@ def lanzar_navegador_sesion(headless: bool = False):
     de Facebook, X e Instagram quedan guardadas.
     """
     p = sync_playwright().start()
-    context = p.chromium.launch_persistent_context(
-        user_data_dir=SESSION_DIR,
-        headless=headless,
-        channel="chrome",  # Usa el Chrome nativo instalado en Windows
-        viewport={"width": 1280, "height": 850},
-        args=[
+    launch_kwargs = {
+        "user_data_dir": SESSION_DIR,
+        "headless": headless,
+        "viewport": {"width": 1280, "height": 850},
+        "args": [
             "--disable-blink-features=AutomationControlled",
             "--start-maximized"
         ]
-    )
+    }
+    try:
+        context = p.chromium.launch_persistent_context(
+            **launch_kwargs,
+            channel="chrome"
+        )
+    except Exception:
+        context = p.chromium.launch_persistent_context(
+            **launch_kwargs
+        )
     return p, context
 
 
