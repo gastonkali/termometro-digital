@@ -38,6 +38,17 @@ def formatear_mensaje_telegram(datos_edicion: Dict[str, Any]) -> str:
             msg.append(f"• *[{partido}]* {tit}")
         msg.append("")
 
+    hallazgos_destacados = datos_edicion.get("hallazgos_destacados", [])
+    if hallazgos_destacados:
+        msg.append("📡 *VISTA PREVIA DE RECLAMOS VECINALES PBA:*")
+        for h in hallazgos_destacados[:3]:
+            p = h.get("partido", "PBA")
+            txt = (h.get("texto") or "").replace("\n", " ").strip()
+            txt_corto = txt[:120] + ("..." if len(txt) > 120 else "")
+            autor = h.get("autor", "Vecinos")
+            msg.append(f"• *[{p}]* {autor}: _{txt_corto}_")
+        msg.append("")
+
     if nombres:
         msg.append(f"📌 *NOMBRES PROPIOS DEL DÍA ({len(nombres)}):*")
         for n in nombres[:4]:

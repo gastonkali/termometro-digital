@@ -172,8 +172,38 @@ EXCLUSIONES_PROVINCIAS: List[str] = [
     "Neuquén", "Río Negro", "Chubut", "Santa Cruz", "Tierra del Fuego",
     "Entre Ríos", "Paraná", "Corrientes", "Misiones", "Posadas", "Chaco",
     "Resistencia", "Formosa", "Santiago del Estero", "Catamarca", "La Rioja",
-    "San Juan", "San Luis", "La Pampa"
+    "San Juan", "San Luis", "La Pampa", "Córdoba", "Cordoba"
 ]
+
+EXCLUSIONES_INTERNACIONALES: List[str] = [
+    "españa", "espana", "madrid", "barcelona", "valencia", "sevilla",
+    "colombia", "bogota", "bogotá", "medellin", "medellín", "cali",
+    "mexico", "méxico", "chile", "santiago de chile", "peru", "perú", "lima",
+    "estados unidos", "eeuu", "usa", "texas", "florida", "miami", "new york", "california",
+    "venezuela", "caracas", "uruguay", "montevideo", "paraguay", "asunción"
+]
+
+PALABRAS_INGLES_FLAG: List[str] = [
+    "translated from", "show original", "the ", "of the", "with the",
+    "was ", "were ", "they ", "that ", "this ", "have been",
+    "road safety", "hazard", "hospitalized", "crash", "police said", "killed in"
+]
+
+
+def es_texto_espanol(texto: str) -> bool:
+    t_low = texto.lower()
+    for flag in PALABRAS_INGLES_FLAG:
+        if flag in t_low:
+            return False
+    palabras = t_low.split()
+    es_count = sum(1 for p in palabras if p in {
+        "de", "la", "el", "en", "y", "a", "los", "se", "del", "las", "por", "un", "para",
+        "con", "no", "una", "su", "al", "lo", "mas", "más", "pero", "sus", "fue", "este",
+        "esta", "está", "son", "vecinos", "policía", "policia", "barrio", "robo", "seguridad"
+    })
+    if len(palabras) >= 6 and es_count == 0:
+        return False
+    return True
 
 # Stopwords en español para el detector de palabras nuevas en Pasada Abierta
 STOPWORDS_ES: Set[str] = {
@@ -238,26 +268,47 @@ def generar_variantes_termino(termino: str) -> List[str]:
 
 def es_exclusion_geografica(texto: str, partido_objetivo: str = "") -> bool:
     """
-    Evalúa si un texto corresponde a CABA o a otra provincia y NO tiene anclaje
-    explícito en un partido bonaerense.
+    Evalúa si un texto corresponde a CABA, otra provincia o país, o no pertenece a PBA.
+    Retorna True si debe ser DESCARTADO.
     """
+    if not es_texto_espanol(texto):
+        return True
+
     t_lower = texto.lower()
 
-    # Si menciona explícitamente el partido bonaerense buscado o "provincia de buenos aires", se conserva
-    if partido_objetivo and partido_objetivo.lower() in t_lower:
-        return False
-    for anclaje in ANCLAJES_GENERALES_PBA:
-        if anclaje.lower() in t_lower:
-            return False
+    # Descartar países y ciudades extranjeras
+    for inter in EXCLUSIONES_INTERNACIONALES:
+        if f" {inter} " in f" {t_lower} " or f"/{inter}" in t_lower or f"#{inter}" in t_lower:
+            return True
 
-    # Verificar si menciona algún partido de PBA
-    for p in PARTIDOS_PBA:
-        if len(p) > 5 and p.lower() in t_lower:
-            return False
-
-    # Si menciona exclusiones de CABA u otras provincias, descartar
+    # Verificar si menciona exclusiones de CABA o provincias
+    menciona_otra_provincia_o_caba = False
     for exc in EXCLUSIONES_CABA + EXCLUSIONES_PROVINCIAS:
         if exc.lower() in t_lower:
-            return True
+            menciona_otra_provincia_o_caba = True
+            break
+
+    # Verificar anclajes positivos explícitos de PBA
+    tiene_anclaje_pba = False
+    if partido_objetivo and partido_objetivo.lower() != "provincia de buenos aires" and partido_objetivo.lower() in t_lower:
+        tiene_anclaje_pba = True
+    else:
+        for anclaje in ANCLAJES_GENERALES_PBA + ["pba", "zona sur", "zona oeste", "zona norte", "amba", "costa atlántica", "costa atlantica"]:
+            if anclaje.lower() in t_lower:
+                tiene_anclaje_pba = True
+                break
+        if not tiene_anclaje_pba:
+            for p in PARTIDOS_PBA:
+                if len(p) > 4 and p.lower() in t_lower:
+                    tiene_anclaje_pba = True
+                    break
+
+    # Si menciona CABA/otra provincia y no tiene anclaje claro PBA, descartar
+    if menciona_otra_provincia_o_caba and not tiene_anclaje_pba:
+        return True
+
+    # Si no tiene ningún anclaje de PBA y se busca específicamente PBA, descartar
+    if not tiene_anclaje_pba:
+        return True
 
     return False

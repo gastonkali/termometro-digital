@@ -55,51 +55,83 @@ def lanzar_navegador_sesion(headless: bool = False):
 def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> List[Dict[str, Any]]:
     """
     Navega a la URL de búsqueda de Facebook, hace scroll y extrae
-    texto de publicaciones y comentarios.
+    texto real de publicaciones y comentarios vecinales.
     """
+    from config_pba import es_exclusion_geografica, es_texto_espanol
+
     posteos = []
     try:
         page.goto(url_busqueda, timeout=35000, wait_until="domcontentloaded")
         time.sleep(3.5)
 
-        # Hacer 2-3 scrolls hacia abajo para cargar resultados recientes
         for _ in range(3):
             page.mouse.wheel(0, 1500)
             time.sleep(1.5)
 
-        # Buscar contenedores de publicaciones de Facebook
-        # En Facebook web las publicaciones suelen estar en roles feed/article o bloques con texto
-        elementos = page.locator('div[role="feed"] > div, div[role="article"]').all()
-        if not elementos:
-            elementos = page.locator('div[data-ad-preview="message"], div[dir="auto"]').all()
+        raw_items = page.evaluate("""() => {
+            const results = [];
+            const main = document.querySelector('div[role="main"]') || document.body;
+            const textElements = main.querySelectorAll('div[dir="auto"]');
+            const seen = new Set();
 
-        for el in elementos[:max_items]:
-            try:
-                texto_completo = el.inner_text().strip()
-                if len(texto_completo) < 30:
-                    continue
+            for (const el of textElements) {
+                const text = (el.innerText || '').trim();
+                // Descartar textos de interfaz o muy cortos
+                if (text.length < 40 || seen.has(text)) continue;
+                if (text.includes('Resultados de') || text.includes('Filtros') || text.includes('Facebook')) continue;
+                if (text.startsWith('Amigos') || text.startsWith('Grupos')) continue;
+                seen.add(text);
 
-                lineas = [l.strip() for l in texto_completo.split("\n") if l.strip()]
-                autor = lineas[0] if lineas else "Usuario Facebook"
-                
-                # Intentar buscar enlace directo a la publicación
-                enlace = page.url
-                a_tags = el.locator('a[href*="/posts/"], a[href*="/permalink/"], a[href*="facebook.com"]').all()
-                if a_tags:
-                    href = a_tags[0].get_attribute("href")
-                    if href:
-                        enlace = href if href.startswith("http") else f"https://www.facebook.com{href}"
+                // Buscar autor y enlace más cercano
+                let url = window.location.href;
+                let autor = "Vecinos en Facebook";
 
-                posteos.append({
-                    "fuente": "Facebook (Sesión Abierta)",
-                    "autor": autor,
-                    "url": enlace,
-                    "titulo": f"Alerta en Facebook: {lineas[0][:60]}",
-                    "texto": texto_completo,
-                    "fecha_publicacion": "Detectado en vivo con mi sesión"
-                })
-            except Exception:
+                const card = el.closest('div[role="article"]') || el.parentElement?.parentElement?.parentElement;
+                if (card) {
+                    const authorLink = card.querySelector('h2 a, h3 a, strong a, a[role="link"]');
+                    if (authorLink && authorLink.innerText) {
+                        const aName = authorLink.innerText.trim();
+                        if (aName && aName.length < 50 && !aName.includes('Facebook')) {
+                            autor = aName;
+                        }
+                    }
+                    const aPost = card.querySelector('a[href*="/posts/"], a[href*="/permalink/"], a[href*="/groups/"]');
+                    if (aPost && aPost.href) {
+                        url = aPost.href;
+                    }
+                }
+
+                results.push({
+                    autor: autor,
+                    texto: text,
+                    url: url
+                });
+            }
+            return results;
+        }""")
+
+        for item in raw_items:
+            txt = item.get("texto", "").strip()
+            if not txt or len(txt) < 35:
                 continue
+            if not es_texto_espanol(txt):
+                continue
+            if es_exclusion_geografica(txt):
+                continue
+
+            autor = item.get("autor") or "Vecinos en Facebook"
+            primer_renglon = txt.split("\n")[0][:75].strip()
+
+            posteos.append({
+                "fuente": "Facebook (Sesión Abierta)",
+                "autor": autor,
+                "url": item.get("url") or page.url,
+                "titulo": f"{autor}: {primer_renglon}",
+                "texto": txt,
+                "fecha_publicacion": "Detectado en vivo con mi sesión"
+            })
+            if len(posteos) >= max_items:
+                break
 
     except Exception as e:
         print(f"[Facebook Session] Error navegando: {e}")
@@ -109,10 +141,16 @@ def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> Lis
 
 def extraer_posteos_twitter(page, url_busqueda: str, max_items: int = 8) -> List[Dict[str, Any]]:
     """
-    Navega a la búsqueda de X/Twitter en vivo y extrae tweets recientes.
+    Navega a la búsqueda de X/Twitter en vivo y extrae tweets recientes en español de PBA.
     """
+    from config_pba import es_exclusion_geografica, es_texto_espanol
+
     tweets = []
     try:
+        # Asegurar parámetros de idioma español y excluir CABA / Córdoba / Madrid
+        if "lang%3Aes" not in url_busqueda and "lang:es" not in url_busqueda:
+            url_busqueda += "+lang%3Aes+-filter%3Areplies+-CABA+-Cordoba+-Madrid"
+
         page.goto(url_busqueda, timeout=35000, wait_until="domcontentloaded")
         time.sleep(3)
 
@@ -121,12 +159,29 @@ def extraer_posteos_twitter(page, url_busqueda: str, max_items: int = 8) -> List
             time.sleep(1.5)
 
         articulos = page.locator('article[data-testid="tweet"]').all()
-        for art in articulos[:max_items]:
+        for art in articulos:
             try:
-                texto = art.inner_text().strip()
+                # Extraer texto del tweet
+                text_el = art.locator('[data-testid="tweetText"]').first
+                if not text_el.count():
+                    continue
+                texto = text_el.inner_text().strip()
                 if len(texto) < 25:
                     continue
-                
+
+                # Filtrar idioma estrictamente español
+                if not es_texto_espanol(texto):
+                    continue
+
+                # Filtrar exclusión geográfica de PBA
+                if es_exclusion_geografica(texto):
+                    continue
+
+                # Extraer autor real
+                author_el = art.locator('[data-testid="User-Name"]').first
+                autor = author_el.inner_text().split("\n")[0].strip() if author_el.count() else "Usuario X"
+
+                # Enlace directo al tweet
                 enlace = page.url
                 links = art.locator('a[href*="/status/"]').all()
                 if links:
@@ -134,14 +189,17 @@ def extraer_posteos_twitter(page, url_busqueda: str, max_items: int = 8) -> List
                     if href:
                         enlace = f"https://x.com{href}" if not href.startswith("http") else href
 
+                primer_renglon = texto.split("\n")[0][:75].strip()
                 tweets.append({
                     "fuente": "X / Twitter (Sesión Abierta)",
-                    "autor": texto.split("\n")[0] if "\n" in texto else "Usuario X",
+                    "autor": autor,
                     "url": enlace,
-                    "titulo": f"Tweet detectado: {texto[:60]}",
+                    "titulo": f"{autor}: {primer_renglon}",
                     "texto": texto,
                     "fecha_publicacion": "En vivo"
                 })
+                if len(tweets) >= max_items:
+                    break
             except Exception:
                 continue
     except Exception as e:

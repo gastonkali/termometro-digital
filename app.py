@@ -344,6 +344,9 @@ def api_whatsapp_alerta():
     convocatorias = conn.execute(
         "SELECT titulo, partido, categoria FROM hallazgos WHERE edicion_id = ? AND es_convocatoria = 1", (ult_id,)
     ).fetchall()
+    destacados = conn.execute(
+        "SELECT titulo, texto, partido, autor, fuente FROM hallazgos WHERE edicion_id = ? AND descartado = 0 ORDER BY id DESC LIMIT 5", (ult_id,)
+    ).fetchall()
     nombres = conn.execute("SELECT nombre FROM nombres_propios WHERE vigente = 1 LIMIT 5").fetchall()
     conn.close()
 
@@ -354,6 +357,7 @@ def api_whatsapp_alerta():
         "total_hallazgos": edicion["total_hallazgos"] if edicion else 0,
         "nuevos_hallazgos": edicion["nuevos_hallazgos"] if edicion else 0,
         "convocatorias": [dict(c) for c in convocatorias],
+        "hallazgos_destacados": [dict(d) for d in destacados],
         "nombres_propios": [n["nombre"] for n in nombres],
     }
 
@@ -370,6 +374,9 @@ def api_telegram_alerta():
     convocatorias = conn.execute(
         "SELECT titulo, partido, categoria FROM hallazgos WHERE edicion_id = ? AND es_convocatoria = 1", (ult_id,)
     ).fetchall()
+    destacados = conn.execute(
+        "SELECT titulo, texto, partido, autor, fuente FROM hallazgos WHERE edicion_id = ? AND descartado = 0 ORDER BY id DESC LIMIT 5", (ult_id,)
+    ).fetchall()
     nombres = conn.execute("SELECT nombre FROM nombres_propios WHERE vigente = 1 LIMIT 5").fetchall()
     conn.close()
 
@@ -380,6 +387,7 @@ def api_telegram_alerta():
         "total_hallazgos": edicion["total_hallazgos"] if edicion else 0,
         "nuevos_hallazgos": edicion["nuevos_hallazgos"] if edicion else 0,
         "convocatorias": [dict(c) for c in convocatorias],
+        "hallazgos_destacados": [dict(d) for d in destacados],
         "nombres_propios": [n["nombre"] for n in nombres],
     }
 

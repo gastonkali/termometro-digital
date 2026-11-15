@@ -164,6 +164,36 @@ def generar_html_reporte(edicion_id: int) -> str:
     .badge-agenda {{ background: #fef3c7; color: #b45309; border: 1px solid #fcd34d; }}
     .badge-partido {{ background: #e0f2fe; color: #0369a1; }}
     .badge-red {{ background: #ede9fe; color: #6d28d9; }}
+    .badge-cat {{ background: #fee2e2; color: #b91c1c; }}
+    .item-card {{
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+      page-break-inside: avoid;
+    }}
+    .preview-box {{
+      background: #f8fafc;
+      border-left: 4px solid #2563eb;
+      padding: 8px 12px;
+      margin: 8px 0;
+      border-radius: 4px;
+    }}
+    .preview-title {{
+      font-size: 7.5pt;
+      font-weight: bold;
+      color: #64748b;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }}
+    .preview-text {{
+      color: #1e293b;
+      font-size: 9.5pt;
+      line-height: 1.45;
+      margin: 0;
+      white-space: pre-wrap;
+    }}
     .item {{
       border-bottom: 1px solid #f1f5f9;
       padding: 8px 0;
@@ -270,16 +300,25 @@ def generar_html_reporte(edicion_id: int) -> str:
     # Bloque 4: Hallazgos Destacados
     html += '<div class="section-title">📡 Hallazgos Recientes Destacados en PBA</div>'
     for h in hallazgos[:15]:
+        texto_limpio = (h['texto'] or "").strip()
+        if len(texto_limpio) > 350:
+            texto_limpio = texto_limpio[:350] + "..."
         html += f"""
-        <div class="item">
-          <div>
+        <div class="item-card">
+          <div style="margin-bottom: 6px;">
             <span class="badge badge-partido">📍 {h['partido']}</span>
             <span class="badge badge-red">{h['fuente']}</span>
-            <span style="font-size: 8pt; color: #64748b;">🔑 {h['termino_detectado']}</span>
+            <span class="badge badge-cat">🏷️ {h['categoria'].upper()}</span>
           </div>
           <div class="item-title">{h['titulo']}</div>
-          <div class="item-text">{h['texto'][:300]}</div>
-          <div class="item-meta">Enlace: <a class="item-url" href="{h['url']}">{h['url']}</a></div>
+          <div class="preview-box">
+            <div class="preview-title">Vista previa de la publicación:</div>
+            <p class="preview-text">"{texto_limpio}"</p>
+          </div>
+          <div class="item-meta">
+            <span>👤 <strong>Autor:</strong> {h['autor']}</span> • 
+            <span>🔗 <a class="item-url" href="{h['url']}">Abrir publicación original ↗</a></span>
+          </div>
         </div>
         """
 
