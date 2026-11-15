@@ -32,6 +32,9 @@ from engine import (
 )
 from pdf_service import crear_reporte_pdf_edicion
 from whatsapp_service import enviar_alerta_whatsapp
+from clustering_service import agrupar_en_clusters
+from spike_detector import evaluar_spikes_municipales, procesar_y_notificar_spikes
+from ocr_service import extraer_texto_de_imagen
 
 app = Flask(__name__)
 init_db()
@@ -149,6 +152,12 @@ def api_state():
 
     conn.close()
 
+    # Desduplicación semántica y clusters de incidentes
+    clusters = agrupar_en_clusters(hallazgos)
+
+    # Detección de picos en tiempo real (spikes)
+    spikes_activos = evaluar_spikes_municipales(ventana_minutos=60, umbral_alerta=3)
+
     diccionario = obtener_diccionario_completo()
     partidos_q = [partido] if partido and partido in PARTIDOS_PBA else None
     cola_fb = generar_matriz_consultas_multired(partidos_seleccionados=partidos_q)[:45]
@@ -158,6 +167,8 @@ def api_state():
             "kpis": {
                 "total_hallazgos": total_hallazgos,
                 "total_convocatorias": total_convocatorias,
+                "total_clusters": len(clusters),
+                "spikes_activos": len(spikes_activos),
                 "nombres_vigentes": sum(1 for n in nombres_propios if n["vigente"] == 1),
                 "propuestas_pendientes": sum(
                     1 for p in palabras_candidatas if p["estado"] == "propuesta"
@@ -167,6 +178,8 @@ def api_state():
             "conteo_categorias": conteo_categorias,
             "top_partidos": top_partidos,
             "hallazgos": hallazgos,
+            "clusters": clusters,
+            "spikes": spikes_activos,
             "nombres_propios": nombres_propios,
             "palabras_candidatas": palabras_candidatas,
             "ediciones": ediciones,
@@ -281,6 +294,22 @@ def api_agregar_keyword():
     return jsonify(
         {"ok": True, "variantes_generadas": generar_variantes_termino(termino)}
     )
+
+
+@app.route("/api/ocr/flyer", methods=["POST"])
+def api_ocr_flyer():
+    payload = request.get_json(silent=True) or {}
+    url_img = payload.get("url_imagen") or ""
+    res = extraer_texto_de_imagen(url_img)
+    return jsonify(res)
+
+
+@app.route("/api/spikes/notificar", methods=["POST"])
+def api_spikes_notificar():
+    payload = request.get_json(silent=True) or {}
+    numero = payload.get("numero")
+    spikes = procesar_y_notificar_spikes(numero)
+    return jsonify({"ok": True, "spikes_enviados": len(spikes), "spikes": spikes})
 
 
 @app.route("/api/pdf/generar", methods=["POST"])

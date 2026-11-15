@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  termometro-web:
+    build: .
+    container_name: termometro_digital_pba
+    restart: always
+    ports:
+      - "5055:5055"
+    env_file:
+      - .env
+    volumes:
+      # Persistencia de la base de datos y reportes generados
+      - ./termometro_digital.db:/app/termometro_digital.db
+      - ./reportes_pdf:/app/reportes_pdf
+      - ./reportes:/app/reportes
+      - ./user_session_browser:/app/user_session_browser
+    environment:
+      - TERMOMETRO_PORT=5055
