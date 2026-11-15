@@ -1,0 +1,27 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Cuentas, cookies y sesiones locales del navegador (NUNCA SUBIR)
+user_session_browser/
+.env
+*.db
+*.sqlite3
+
+# Reportes generados localmente
+reportes_pdf/*.pdf
+!reportes_pdf/.gitkeep
+reportes/*.md
+!reportes/.gitkeep
+
+# Entornos virtuales
+.venv/
+venv/
+ENV/
+env/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp

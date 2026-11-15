@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="es" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Termómetro Digital PBA — Monitor Continuo de Facebook</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      background-color: #0b0f19;
+      color: #e2e8f0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    .glass-card {
+      background: rgba(17, 24, 39, 0.85);
+      border: 1px solid rgba(51, 65, 85, 0.7);
+      backdrop-filter: blur(8px);
+    }
+    .scroll-thin::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    .scroll-thin::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 3px;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+  <!-- TOP NAVBAR -->
+  <header class="border-b border-slate-800 bg-slate-950/90 sticky top-0 z-30">
+    <div class="max-w-[1600px] mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-4">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-red-500 via-amber-500 to-blue-600 flex items-center justify-center shadow-lg shadow-red-500/20 font-bold text-white text-xl">
+          🌡️
+        </div>
+        <div>
+          <div class="flex items-center gap-2.5">
+            <h1 class="text-lg font-bold tracking-tight text-white">Termómetro Digital PBA</h1>
+            <span class="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+              ● 135 Partidos Bonaerenses (Excluye CABA / Otras Prov.)
+            </span>
+          </div>
+          <p class="text-xs text-slate-400">
+            Monitoreo continuo Multi-Red: Facebook • X (Twitter) • Instagram • Google Search • 135 Municipios Bonaerenses
+          </p>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2">
+        <button onclick="abrirModalWhatsApp()" class="px-3 py-2 rounded-lg text-xs font-semibold bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-300 border border-emerald-500/40 transition flex items-center gap-1.5 shadow-lg shadow-emerald-600/10">
+          <span>📲</span> Alerta PDF por WhatsApp
+        </button>
+        <button onclick="abrirModalNombrePropio()" class="px-3 py-2 rounded-lg text-xs font-medium bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/30 transition">
+          + Nombre Propio del Día
+        </button>
+        <button onclick="abrirModalIngesta()" class="px-3 py-2 rounded-lg text-xs font-medium bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 transition">
+          + Cargar Posteo de Mi Facebook
+        </button>
+        <button onclick="abrirModalDiccionario()" class="px-3 py-2 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition">
+          📖 Diccionario y Reglas
+        </button>
+        <button id="btn-scan" onclick="ejecutarBarrido()" class="px-4 py-2 rounded-lg text-xs font-semibold bg-gradient-to-r from-red-600 to-amber-600 hover:from-red-500 hover:to-amber-500 text-white shadow-lg shadow-red-600/20 transition flex items-center gap-1.5">
+          <span id="scan-icon">🔄</span>
+          <span id="scan-label">Ejecutar Edición de Barrido Ahora</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- MAIN CONTAINER -->
+  <main class="max-w-[1600px] w-full mx-auto px-4 py-4 flex-1 space-y-4">
+
+    <!-- KPI SUMMARY BAR -->
+    <section class="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <div class="glass-card rounded-xl p-3.5">
+        <div class="text-xs text-slate-400">Hallazgos Totales (PBA)</div>
+        <div id="kpi-total" class="text-2xl font-bold text-white mt-1">0</div>
+        <div id="kpi-edicion" class="text-[11px] text-slate-400 mt-1">Edición #0</div>
+      </div>
+      <div onclick="toggleFiltroAgenda()" class="glass-card rounded-xl p-3.5 cursor-pointer hover:border-amber-500/60 transition">
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-amber-300 font-medium">📅 Convocatorias (Agenda)</span>
+          <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300">Click para filtrar</span>
+        </div>
+        <div id="kpi-agenda" class="text-2xl font-bold text-amber-400 mt-1">0</div>
+        <div class="text-[11px] text-slate-400 mt-1">nos juntamos, hs, flyer, punto de encuentro</div>
+      </div>
+      <div class="glass-card rounded-xl p-3.5">
+        <div class="text-xs text-purple-300 font-medium">📌 Nombres Propios del Día</div>
+        <div id="kpi-nombres" class="text-2xl font-bold text-purple-400 mt-1">0</div>
+        <div class="text-[11px] text-slate-400 mt-1">Víctimas, barrios o empresas vigentes</div>
+      </div>
+      <div class="glass-card rounded-xl p-3.5">
+        <div class="text-xs text-emerald-300 font-medium">✨ Propuestas (2 Ediciones Seguidas)</div>
+        <div id="kpi-propuestas" class="text-2xl font-bold text-emerald-400 mt-1">0</div>
+        <div class="text-[11px] text-slate-400 mt-1">Detectadas en Pasada Abierta ("vecinos")</div>
+      </div>
+      <div class="glass-card rounded-xl p-3.5">
+        <div class="text-xs text-blue-300 font-medium">🗺️ Cobertura Territorial</div>
+        <div class="text-2xl font-bold text-blue-400 mt-1">135 Partidos</div>
+        <div class="text-[11px] text-slate-400 mt-1">Anclaje PBA + Conurbano + Interior</div>
+      </div>
+    </section>
+
+    <!-- FILTERS & CATEGORY PILLS -->
+    <section class="glass-card rounded-xl p-3.5 space-y-3">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <!-- Category Pills -->
+        <div class="flex flex-wrap items-center gap-1.5" id="category-pills">
+          <button onclick="setCategoria('')" data-cat="" class="cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 text-white border border-slate-500">
+            Todas las categorías
+          </button>
+          <button onclick="setCategoria('seguridad')" data-cat="seguridad" class="cat-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-red-950/60 text-red-300 border border-red-800/60 hover:bg-red-900/50">
+            🛡️ Reclamos de seguridad <span id="cnt-seguridad" class="ml-1 opacity-75">(0)</span>
+          </button>
+          <button onclick="setCategoria('justicia')" data-cat="justicia" class="cat-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-purple-950/60 text-purple-300 border border-purple-800/60 hover:bg-purple-900/50">
+            ⚖️ Reclamos de justicia <span id="cnt-justicia" class="ml-1 opacity-75">(0)</span>
+          </button>
+          <button onclick="setCategoria('sociales_servicios')" data-cat="sociales_servicios" class="cat-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-amber-950/60 text-amber-300 border border-amber-800/60 hover:bg-amber-900/50">
+            ⚡ Sociales y servicios <span id="cnt-sociales_servicios" class="ml-1 opacity-75">(0)</span>
+          </button>
+          <button onclick="setCategoria('eventos_no_autorizados')" data-cat="eventos_no_autorizados" class="cat-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-pink-950/60 text-pink-300 border border-pink-800/60 hover:bg-pink-900/50">
+            🏍️ Eventos no autorizados <span id="cnt-eventos_no_autorizados" class="ml-1 opacity-75">(0)</span>
+          </button>
+          <button onclick="setCategoria('imagen_institucional')" data-cat="imagen_institucional" class="cat-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-950/60 text-blue-300 border border-blue-800/60 hover:bg-blue-900/50">
+            🚓 Imagen institucional <span id="cnt-imagen_institucional" class="ml-1 opacity-75">(0)</span>
+          </button>
+        </div>
+
+        <!-- Agenda Filter Toggle -->
+        <button id="btn-agenda-filter" onclick="toggleFiltroAgenda()" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-amber-300 border border-amber-500/30 hover:bg-amber-500/20 transition">
+          📅 Ver Solo Agenda de Convocatorias
+        </button>
+      </div>
+
+      <!-- Second Filter Row: 135 Partidos, Pasada, Search -->
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-2.5 pt-1 border-t border-slate-800/80">
+        <div>
+          <label class="block text-[11px] text-slate-400 mb-1">Filtrar por Partido Bonaerense (135 Partidos)</label>
+          <select id="select-partido" onchange="cargarEstado()" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white">
+            <option value="">Todos los 135 Partidos + Anclaje PBA</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-[11px] text-slate-400 mb-1">Filtrar por Pasada Metodológica</label>
+          <select id="select-pasada" onchange="cargarEstado()" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white">
+            <option value="">Todas las pasadas (1 a 4)</option>
+            <option value="anclaje_general">1ª Pasada: Anclaje General (PBA / bonaerense / conurbano)</option>
+            <option value="partido_135">2ª Pasada: Por cada uno de los 135 Partidos</option>
+            <option value="nombre_propio">3ª Pasada: Nombres Propios del Día vigentes</option>
+            <option value="pasada_abierta">4ª Pasada Abierta: "vecinos" + Partido</option>
+            <option value="agenda_convocatorias">Agenda: Modificadores de Convocatoria</option>
+          </select>
+        </div>
+        <div class="md:col-span-2">
+          <label class="block text-[11px] text-slate-400 mb-1">Búsqueda instantánea en resultados capturados</label>
+          <input id="input-q" type="text" oninput="cargarEstado()" placeholder="Buscar término, variante (insegurida, justicia x), barrio, víctima o empresa..." class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-500" />
+        </div>
+      </div>
+    </section>
+
+    <!-- MAIN 3-COLUMN GRID -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
+
+      <!-- LEFT/CENTER: FEED DE HALLAZGOS DE FACEBOOK (7 cols) -->
+      <section class="lg:col-span-7 space-y-3">
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-bold text-white flex items-center gap-2">
+            <span>📡 Feed de Resultados de Facebook</span>
+            <span id="feed-count-badge" class="px-2 py-0.5 text-xs rounded-full bg-slate-800 text-slate-300">0</span>
+          </h2>
+          <span class="text-[11px] text-slate-400">Descarte automático de CABA y otras provincias activo</span>
+        </div>
+
+        <div id="feed-container" class="space-y-3">
+          <!-- Renderizado dinámico -->
+        </div>
+      </section>
+
+      <!-- RIGHT COLUMN: NOMBRES PROPIOS, PALABRAS CANDIDATAS (2 EDICIONES) Y LANZADOR FB (5 cols) -->
+      <aside class="lg:col-span-5 space-y-4">
+
+        <!-- PANEL 1: PALABRAS NUEVAS DE LA PASada ABIERTA (2 EDICIONES SEGUIDAS) -->
+        <div class="glass-card rounded-xl p-4 border-l-4 border-l-emerald-500">
+          <div class="flex items-center justify-between mb-2">
+            <div>
+              <h3 class="text-sm font-bold text-white flex items-center gap-1.5">
+                ✨ Detector de Palabras Nuevas (Pasada Abierta)
+              </h3>
+              <p class="text-[11px] text-slate-400">
+                Búsqueda <code class="text-emerald-300">"vecinos" + partido</code>. Si una palabra nueva aparece <strong>2 ediciones seguidas</strong>, se propone sumarla a la lista.
+              </p>
+            </div>
+          </div>
+          <div id="candidatas-container" class="space-y-2 max-h-64 overflow-y-auto scroll-thin mt-2">
+            <!-- Renderizado dinámico -->
+          </div>
+        </div>
+
+        <!-- PANEL 2: NOMBRES PROPIOS DEL DÍA VIGENTES -->
+        <div class="glass-card rounded-xl p-4 border-l-4 border-l-purple-500">
+          <div class="flex items-center justify-between mb-2">
+            <div>
+              <h3 class="text-sm font-bold text-white">📌 Nombres Propios del Día (Vigentes)</h3>
+              <p class="text-[11px] text-slate-400">
+                Cada hecho nuevo suma su nombre propio (víctima, barrio o empresa como <em>"Universo Infantil"</em> o <em>"Papelera del Sur"</em>) y se sigue buscando mientras siga vigente.
+              </p>
+            </div>
+            <button onclick="abrirModalNombrePropio()" class="px-2.5 py-1 rounded text-xs bg-purple-600/30 hover:bg-purple-600/50 text-purple-200 border border-purple-500/40 shrink-0">
+              + Agregar
+            </button>
+          </div>
+          <div id="nombres-container" class="space-y-2 max-h-64 overflow-y-auto scroll-thin mt-2">
+            <!-- Renderizado dinámico -->
+          </div>
+        </div>
+
+        <!-- PANEL 3: LANZADOR DIRECTO MULTI-RED (FACEBOOK, X/TWITTER, INSTAGRAM, GOOGLE) -->
+        <div class="glass-card rounded-xl p-4 border-l-4 border-l-blue-500">
+          <div class="flex items-center justify-between mb-2">
+            <div>
+              <h3 class="text-sm font-bold text-white">🔎 Cola de Búsquedas en Vivo Multi-Red</h3>
+              <p class="text-[11px] text-slate-400">
+                Enlaces directos configurados con filtros en tiempo real para <strong>Facebook</strong>, <strong>X (Twitter)</strong>, <strong>Instagram</strong> y <strong>Google Search</strong>.
+              </p>
+            </div>
+          </div>
+          <div id="cola-fb-container" class="space-y-2 max-h-72 overflow-y-auto scroll-thin mt-2">
+            <!-- Renderizado dinámico -->
+          </div>
+        </div>
+
+      </aside>
+    </div>
+  </main>
+
+  <!-- MODAL: AGREGAR NOMBRE PROPIO DEL DÍA -->
+  <div id="modal-nombre-propio" class="fixed inset-0 bg-black/75 z-50 hidden items-center justify-center p-4">
+    <div class="glass-card rounded-2xl max-w-md w-full p-5 space-y-4 border border-purple-500/40">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-bold text-white">📌 Sumar Nombre Propio del Día</h3>
+        <button onclick="cerrarModal('modal-nombre-propio')" class="text-slate-400 hover:text-white">✕</button>
+      </div>
+      <p class="text-xs text-slate-300">
+        Ingresá el nombre de la víctima, barrio, escuela, comercio o empresa (ej. <strong>"Universo Infantil"</strong> o <strong>"Papelera del Sur"</strong>). Se sumará a todas las corridas horarias mientras continúe vigente.
+      </p>
+      <div class="space-y-3">
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">Nombre Propio (Víctima / Barrio / Empresa)</label>
+          <input id="np-nombre" type="text" placeholder="Ej: Papelera del Sur / Universo Infantil" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white" />
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">Tipo</label>
+            <select id="np-tipo" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 text-xs text-white">
+              <option value="Víctima / Caso">Víctima / Caso</option>
+              <option value="Empresa / Institución">Empresa / Institución</option>
+              <option value="Barrio / Lugar">Barrio / Lugar</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">Partido Bonaerense</label>
+            <input id="np-partido" type="text" placeholder="Ej: Quilmes / La Matanza" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 text-xs text-white" />
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">Categoría asociada</label>
+          <select id="np-categoria" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 text-xs text-white">
+            <option value="seguridad">Reclamos de seguridad</option>
+            <option value="justicia">Reclamos de justicia</option>
+            <option value="sociales_servicios">Reclamos sociales y servicios</option>
+            <option value="eventos_no_autorizados">Eventos masivos no autorizados</option>
+            <option value="imagen_institucional">Imagen institucional</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">Contexto del hecho</label>
+          <input id="np-contexto" type="text" placeholder="Ej: Reclamo vecinal frente a la planta / pedido de justicia" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white" />
+        </div>
+      </div>
+      <div class="flex justify-end gap-2 pt-2">
+        <button onclick="cerrarModal('modal-nombre-propio')" class="px-3 py-1.5 rounded-lg text-xs bg-slate-800 text-slate-300">Cancelar</button>
+        <button onclick="guardarNombrePropio()" class="px-4 py-1.5 rounded-lg text-xs font-semibold bg-purple-600 hover:bg-purple-500 text-white">Guardar y Seguir en Facebook</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: ALERTAS WHATSAPP Y DESCARGA PDF -->
+  <div id="modal-whatsapp" class="fixed inset-0 bg-black/75 z-50 hidden items-center justify-center p-4">
+    <div class="glass-card rounded-2xl max-w-md w-full p-5 space-y-4 border border-emerald-500/40">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <span>📲</span> Alertas PDF y Resumen por WhatsApp
+        </h3>
+        <button onclick="cerrarModal('modal-whatsapp')" class="text-slate-400 hover:text-white">✕</button>
+      </div>
+      <p class="text-xs text-slate-300">
+        Ingresá tu número con código de país y área (ej. <code class="text-emerald-300 font-bold">5491112345678</code> para Argentina). El sistema generará el reporte PDF estilizado de la edición actual y enviará el resumen de alertas y agenda a tu WhatsApp.
+      </p>
+      <div class="space-y-3">
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">Tu número de WhatsApp</label>
+          <input id="wa-numero" type="text" placeholder="Ej: 5491123456789" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white" />
+        </div>
+        <div id="wa-resultado-box" class="hidden p-3 rounded-xl bg-slate-900/90 border border-emerald-500/30 space-y-2 text-xs">
+          <div class="text-emerald-400 font-semibold" id="wa-status-text">✓ Reporte PDF compilado con éxito</div>
+          <p class="text-[11px] text-slate-400" id="wa-pdf-info"></p>
+          <a id="wa-link-btn" href="#" target="_blank" class="block text-center py-2 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-bold text-white text-xs shadow-lg shadow-emerald-600/20">
+            Abrir WhatsApp y Enviar Alerta ↗
+          </a>
+        </div>
+      </div>
+      <div class="flex justify-between items-center pt-2">
+        <button onclick="descargarPdfLocal()" class="px-3 py-1.5 rounded-lg text-xs bg-slate-800 hover:bg-slate-700 text-slate-200">
+          📄 Generar PDF Solo
+        </button>
+        <div class="flex gap-2">
+          <button onclick="cerrarModal('modal-whatsapp')" class="px-3 py-1.5 rounded-lg text-xs bg-slate-800 text-slate-300">Cerrar</button>
+          <button id="btn-wa-enviar" onclick="enviarAlertaWhatsApp()" class="px-4 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white">
+            Generar PDF y Enviar
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: CARGAR POSTEO DIRECTO DE FACEBOOK -->
+  <div id="modal-ingesta" class="fixed inset-0 bg-black/75 z-50 hidden items-center justify-center p-4">
+    <div class="glass-card rounded-2xl max-w-lg w-full p-5 space-y-4 border border-blue-500/40">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-bold text-white">📥 Analizar / Cargar Posteo de Facebook</h3>
+        <button onclick="cerrarModal('modal-ingesta')" class="text-slate-400 hover:text-white">✕</button>
+      </div>
+      <p class="text-xs text-slate-300">
+        Pegá el texto de un posteo o grupo vecinal de Facebook. El motor aplicará el filtro geográfico PBA (descartando CABA/interior), detectará modificadores de agenda, extraerá nombres propios y analizará palabras nuevas.
+      </p>
+      <div class="space-y-3">
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">Autor / Grupo de Facebook</label>
+            <input id="ing-autor" type="text" placeholder="Ej: Vecinos en Alerta Lanús" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white" />
+          </div>
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">Partido (opcional, se autodetecta)</label>
+            <input id="ing-partido" type="text" placeholder="Ej: Lanús / Moreno" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white" />
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">URL del posteo en Facebook (opcional)</label>
+          <input id="ing-url" type="text" placeholder="https://www.facebook.com/..." class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white" />
+        </div>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">Texto completo de la publicación</label>
+          <textarea id="ing-texto" rows="4" placeholder="Ej: Vecinos de Quilmes nos juntamos mañana a las 18 hs frente a la comisaría para pedir seguridad..." class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"></textarea>
+        </div>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">Pasada asociada</label>
+          <select id="ing-pasada" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white">
+            <option value="anclaje_general">1ª/2ª Pasada: Monitoreo por Palabras Clave</option>
+            <option value="pasada_abierta">4ª Pasada Abierta ("vecinos" + partido — evalúa palabras nuevas)</option>
+            <option value="nombre_propio">3ª Pasada: Seguimiento de Nombre Propio</option>
+          </select>
+        </div>
+      </div>
+      <div class="flex justify-end gap-2 pt-2">
+        <button onclick="cerrarModal('modal-ingesta')" class="px-3 py-1.5 rounded-lg text-xs bg-slate-800 text-slate-300">Cancelar</button>
+        <button onclick="procesarIngestaManual()" class="px-4 py-1.5 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white">Procesar e Incorporar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: DICCIONARIO COMPLETO Y AGREGAR PALABRA CLAVE -->
+  <div id="modal-diccionario" class="fixed inset-0 bg-black/75 z-50 hidden items-center justify-center p-4">
+    <div class="glass-card rounded-2xl max-w-4xl w-full p-5 space-y-4 max-h-[88vh] flex flex-col">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-bold text-white">📖 Diccionario Maestro de Palabras Clave, Variantes y Modificadores</h3>
+        <button onclick="cerrarModal('modal-diccionario')" class="text-slate-400 hover:text-white">✕</button>
+      </div>
+      <div class="flex flex-wrap gap-2 items-end border-b border-slate-800 pb-3">
+        <div class="flex-1 min-w-[200px]">
+          <label class="block text-[11px] text-slate-400 mb-1">Sumar nuevo término manualmente (se generan variantes sin tilde automáticamente)</label>
+          <input id="kw-nuevo" type="text" placeholder="Ej: entradera / corte de suministro..." class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white" />
+        </div>
+        <div>
+          <label class="block text-[11px] text-slate-400 mb-1">Categoría</label>
+          <select id="kw-categoria" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white">
+            <option value="seguridad">Reclamos de seguridad</option>
+            <option value="justicia">Reclamos de justicia</option>
+            <option value="sociales_servicios">Reclamos sociales y servicios</option>
+            <option value="eventos_no_autorizados">Eventos masivos no autorizados</option>
+            <option value="imagen_institucional">Imagen institucional</option>
+          </select>
+        </div>
+        <button onclick="agregarKeywordManual()" class="px-4 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white">
+          + Sumar a la lista
+        </button>
+      </div>
+      <div id="diccionario-body" class="overflow-y-auto scroll-thin space-y-4 pr-1 text-xs">
+        <!-- Renderizado dinámico -->
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let filtroCategoria = "";
+    let filtroSoloAgenda = false;
+    let estadoGlobal = null;
+
+    const COLORES_CAT = {
+      seguridad: { badge: "bg-red-500/20 text-red-300 border-red-500/40", label: "🛡️ Reclamos de seguridad" },
+      justicia: { badge: "bg-purple-500/20 text-purple-300 border-purple-500/40", label: "⚖️ Reclamos de justicia" },
+      sociales_servicios: { badge: "bg-amber-500/20 text-amber-300 border-amber-500/40", label: "⚡ Sociales y servicios" },
+      eventos_no_autorizados: { badge: "bg-pink-500/20 text-pink-300 border-pink-500/40", label: "🏍️ Eventos no autorizados" },
+      imagen_institucional: { badge: "bg-blue-500/20 text-blue-300 border-blue-500/40", label: "🚓 Imagen institucional" },
+    };
+
+    const ETIQUETAS_PASADA = {
+      anclaje_general: "1ª Pasada: Anclaje PBA",
+      partido_135: "2ª Pasada: 135 Partidos",
+      nombre_propio: "3ª Pasada: Nombre Propio",
+      pasada_abierta: "4ª Pasada Abierta (vecinos + partido)",
+      agenda_convocatorias: "Agenda: Convocatoria Vecinal"
+    };
+
+    async function cargarEstado() {
+      const partido = document.getElementById("select-partido").value;
+      const pasada = document.getElementById("select-pasada").value;
+      const q = document.getElementById("input-q").value;
+
+      const params = new URLSearchParams();
+      if (filtroCategoria) params.set("categoria", filtroCategoria);
+      if (partido) params.set("partido", partido);
+      if (pasada) params.set("pasada", pasada);
+      if (filtroSoloAgenda) params.set("solo_agenda", "1");
+      if (q) params.set("q", q);
+
+      const res = await fetch(`/api/state?${params.toString()}`);
+      const data = await res.json();
+      estadoGlobal = data;
+
+      // Poblar selector de 135 partidos una sola vez
+      const selPartido = document.getElementById("select-partido");
+      if (selPartido.options.length <= 1 && data.partidos_pba) {
+        data.partidos_pba.forEach(p => {
+          const opt = document.createElement("option");
+          opt.value = p;
+          opt.textContent = p;
+          selPartido.appendChild(opt);
+        });
+      }
+
+      // Actualizar KPIs
+      document.getElementById("kpi-total").textContent = data.kpis.total_hallazgos;
+      document.getElementById("kpi-agenda").textContent = data.kpis.total_convocatorias;
+      document.getElementById("kpi-nombres").textContent = data.kpis.nombres_vigentes;
+      document.getElementById("kpi-propuestas").textContent = data.kpis.propuestas_pendientes;
+      if (data.kpis.ultima_edicion) {
+        document.getElementById("kpi-edicion").textContent =
+          `Última edición #${data.kpis.ultima_edicion.id} (${data.kpis.ultima_edicion.modo})`;
+      }
+
+      // Contadores por categoría
+      ["seguridad", "justicia", "sociales_servicios", "eventos_no_autorizados", "imagen_institucional"].forEach(c => {
+        const el = document.getElementById(`cnt-${c}`);
+        if (el) el.textContent = `(${data.conteo_categorias[c] || 0})`;
+      });
+
+      renderFeed(data.hallazgos);
+      renderPalabrasCandidatas(data.palabras_candidatas);
+      renderNombresPropios(data.nombres_propios);
+      renderColaFacebook(data.cola_facebook);
+      renderDiccionarioModal(data.diccionario, data.modificadores_convocatoria);
+    }
+
+    function renderFeed(hallazgos) {
+      const container = document.getElementById("feed-container");
+      document.getElementById("feed-count-badge").textContent = hallazgos.length;
+
+      if (!hallazgos.length) {
+        container.innerHTML = `
+          <div class="glass-card rounded-xl p-8 text-center space-y-2">
+            <div class="text-2xl">🔎</div>
+            <div class="text-sm font-semibold text-white">No hay hallazgos con este filtro todavía</div>
+            <p class="text-xs text-slate-400">Hacé clic en "Ejecutar Edición de Barrido Ahora" o abrí una búsqueda directa en tu Facebook.</p>
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = hallazgos.map(h => {
+        const catInfo = COLORES_CAT[h.categoria] || COLORES_CAT.seguridad;
+        const pasadaLabel = ETIQUETAS_PASADA[h.pasada] || h.pasada;
+
+        const badgesAgenda = (h.modificadores_agenda || []).map(m =>
+          `<span class="px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40">📅 Convocatoria: ${m}</span>`
+        ).join("");
+
+        const badgesNombres = (h.nombres_propios || []).map(n =>
+          `<span class="px-2 py-0.5 rounded text-[11px] font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/40">📌 ${n}</span>`
+        ).join("");
+
+        return `
+          <article class="glass-card rounded-xl p-4 space-y-2.5 hover:border-slate-600 transition">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div class="flex flex-wrap items-center gap-1.5">
+                <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold border ${catInfo.badge}">
+                  ${catInfo.label}
+                </span>
+                <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-500/15 text-blue-300 border border-blue-500/30">
+                  📍 ${h.partido}
+                </span>
+                <span class="px-2 py-0.5 rounded text-[11px] bg-slate-800 text-slate-300 border border-slate-700">
+                  ${pasadaLabel}
+                </span>
+              </div>
+              <span class="text-[11px] text-slate-400">${h.fuente} • ${h.fecha_publicacion || h.fecha_deteccion}</span>
+            </div>
+
+            <h3 class="text-sm font-bold text-white leading-snug">${h.titulo || "Publicación en Facebook"}</h3>
+            <p class="text-xs text-slate-300 leading-relaxed">${h.texto}</p>
+
+            <div class="flex flex-wrap items-center gap-1.5 pt-1">
+              <span class="px-2 py-0.5 rounded text-[11px] bg-slate-900 text-slate-300 border border-slate-700">
+                🔑 Término: <strong class="text-white">${h.termino_detectado}</strong>
+                ${h.variante_usada && h.variante_usada !== h.termino_detectado ? `(variante: ${h.variante_usada})` : ""}
+              </span>
+              ${badgesAgenda}
+              ${badgesNombres}
+            </div>
+
+            <div class="flex items-center justify-between pt-2 border-t border-slate-800/80 text-xs">
+              <span class="text-[11px] text-slate-400">Anclaje: ${h.anclaje_usado || h.partido}</span>
+              <a href="${h.url}" target="_blank" rel="noopener" class="text-blue-400 hover:text-blue-300 font-semibold flex items-center gap-1">
+                Abrir en Facebook ↗
+              </a>
+            </div>
+          </article>
+        `;
+      }).join("");
+    }
+
+    function renderPalabrasCandidatas(candidatas) {
+      const container = document.getElementById("candidatas-container");
+      if (!candidatas.length) {
+        container.innerHTML = `<div class="text-xs text-slate-400 py-2">Aún no hay palabras candidatas en observación.</div>`;
+        return;
+      }
+
+      container.innerHTML = candidatas.map(c => {
+        const esPropuesta = c.estado === "propuesta";
+        const esIncorporada = c.estado === "incorporada";
+        return `
+          <div class="p-2.5 rounded-lg border ${esPropuesta ? 'bg-emerald-950/30 border-emerald-500/50' : 'bg-slate-900/70 border-slate-800'} flex flex-col gap-1.5">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span class="text-xs font-bold text-white">"${c.palabra}"</span>
+                <span class="text-[10px] px-1.5 py-0.5 rounded ${esPropuesta ? 'bg-emerald-500/20 text-emerald-300 font-semibold' : 'bg-slate-800 text-slate-400'}">
+                  ${c.ediciones_consecutivas} ed. seguidas (${c.total_apariciones} apariciones)
+                </span>
+              </div>
+              <span class="text-[10px] text-slate-400">📍 ${c.partido_origen || 'PBA'}</span>
+            </div>
+            ${c.ejemplo_texto ? `<p class="text-[11px] text-slate-400 line-clamp-2 italic">"${c.ejemplo_texto}"</p>` : ''}
+            ${esPropuesta ? `
+              <div class="flex items-center justify-between pt-1">
+                <span class="text-[11px] text-emerald-300 font-medium">⚡ Apareció 2+ ediciones seguidas: ¿Sumar a "${c.categoria_sugerida}"?</span>
+                <div class="flex gap-1.5">
+                  <button onclick="aprobarCandidata(${c.id}, '${c.categoria_sugerida}')" class="px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-500 text-white">
+                    ✓ Sumar a la lista
+                  </button>
+                  <button onclick="descartarCandidata(${c.id})" class="px-2 py-0.5 rounded text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-300">
+                    Descartar
+                  </button>
+                </div>
+              </div>
+            ` : esIncorporada ? `
+              <span class="text-[11px] text-emerald-400">✓ Ya incorporada al diccionario (${c.categoria_sugerida})</span>
+            ` : `
+              <span class="text-[10px] text-slate-500">En observación (1ª edición detectada — requiere 2 seguidas para proponer)</span>
+            `}
+          </div>
+        `;
+      }).join("");
+    }
+
+    function renderNombresPropios(nombres) {
+      const container = document.getElementById("nombres-container");
+      if (!nombres.length) {
+        container.innerHTML = `<div class="text-xs text-slate-400 py-2">No hay nombres propios cargados todavía.</div>`;
+        return;
+      }
+
+      container.innerHTML = nombres.map(n => {
+        const fbQuery = encodeURIComponent(`"${n.nombre}" ${n.partido || 'Buenos Aires'}`);
+        const fbUrl = `https://www.facebook.com/search/posts?q=${fbQuery}`;
+        return `
+          <div class="p-2.5 rounded-lg bg-slate-900/80 border ${n.vigente ? 'border-purple-500/40' : 'border-slate-800 opacity-60'} flex items-center justify-between gap-2">
+            <div>
+              <div class="flex items-center gap-1.5">
+                <span class="text-xs font-bold text-white">${n.nombre}</span>
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300">${n.tipo}</span>
+                <span class="text-[10px] text-slate-400">📍 ${n.partido || 'PBA'}</span>
+              </div>
+              <p class="text-[11px] text-slate-400 mt-0.5">${n.contexto || ''} • ${n.apariciones} menciones</p>
+            </div>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <a href="${fbUrl}" target="_blank" rel="noopener" class="px-2 py-1 rounded text-[11px] bg-blue-600/20 text-blue-300 hover:bg-blue-600/40">
+                Buscar en FB ↗
+              </a>
+              <button onclick="toggleVigenciaNombre(${n.id}, ${n.vigente ? 0 : 1})" class="px-2 py-1 rounded text-[11px] ${n.vigente ? 'bg-emerald-600/20 text-emerald-300' : 'bg-slate-800 text-slate-400'}">
+                ${n.vigente ? 'Vigente' : 'Archivado'}
+              </button>
+            </div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function renderColaFacebook(cola) {
+      const container = document.getElementById("cola-fb-container");
+      if (!cola || !cola.length) {
+        container.innerHTML = "";
+        return;
+      }
+      container.innerHTML = cola.map(item => `
+        <div class="p-2.5 rounded-lg bg-slate-900/80 border border-slate-800 flex flex-col gap-2 text-xs">
+          <div class="flex items-center justify-between">
+            <div class="truncate">
+              <span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 mr-1">${ETIQUETAS_PASADA[item.pasada] || item.pasada}</span>
+              <span class="text-slate-200 font-medium">${item.fb_search_query}</span>
+            </div>
+            <span class="text-[10px] text-slate-500">📍 ${item.partido}</span>
+          </div>
+          <div class="flex flex-wrap items-center gap-1.5 pt-0.5">
+            <a href="${item.fb_url}" target="_blank" rel="noopener" class="px-2 py-0.5 rounded text-[11px] font-semibold bg-blue-600 hover:bg-blue-500 text-white">
+              Facebook ↗
+            </a>
+            ${item.tw_url ? `
+              <a href="${item.tw_url}" target="_blank" rel="noopener" class="px-2 py-0.5 rounded text-[11px] font-semibold bg-sky-600/30 hover:bg-sky-600/50 text-sky-200 border border-sky-500/40">
+                X / Twitter ↗
+              </a>
+            ` : ''}
+            ${item.ig_url ? `
+              <a href="${item.ig_url}" target="_blank" rel="noopener" class="px-2 py-0.5 rounded text-[11px] font-semibold bg-pink-600/30 hover:bg-pink-600/50 text-pink-200 border border-pink-500/40">
+                Instagram ↗
+              </a>
+            ` : ''}
+            ${item.google_url ? `
+              <a href="${item.google_url}" target="_blank" rel="noopener" class="px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-700 hover:bg-slate-600 text-slate-200">
+                Google ↗
+              </a>
+            ` : ''}
+          </div>
+        </div>
+      `).join("");
+    }
+
+    function renderDiccionarioModal(diccionario, modificadores) {
+      const body = document.getElementById("diccionario-body");
+      if (!diccionario) return;
+      let html = "";
+      for (const [key, info] of Object.entries(diccionario)) {
+        html += `
+          <div class="p-3 rounded-xl bg-slate-900/90 border border-slate-800 space-y-2">
+            <div class="font-bold text-white text-sm">${info.nombre} (${info.terminos.length} términos base + variantes sin tilde)</div>
+            <div class="flex flex-wrap gap-1.5">
+              ${info.terminos.map(t => `<span class="px-2 py-0.5 rounded bg-slate-800 text-slate-200 border border-slate-700">${t}</span>`).join("")}
+            </div>
+          </div>
+        `;
+      }
+      html += `
+        <div class="p-3 rounded-xl bg-amber-950/30 border border-amber-700/40 space-y-2">
+          <div class="font-bold text-amber-300 text-sm">📅 Modificadores de Convocatoria (para la Agenda)</div>
+          <div class="flex flex-wrap gap-1.5">
+            ${(modificadores || []).map(m => `<span class="px-2 py-0.5 rounded bg-amber-500/20 text-amber-200 border border-amber-500/30">${m}</span>`).join("")}
+          </div>
+        </div>
+      `;
+      body.innerHTML = html;
+    }
+
+    function setCategoria(cat) {
+      filtroCategoria = cat;
+      cargarEstado();
+    }
+
+    function toggleFiltroAgenda() {
+      filtroSoloAgenda = !filtroSoloAgenda;
+      const btn = document.getElementById("btn-agenda-filter");
+      if (filtroSoloAgenda) {
+        btn.className = "px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-500 text-slate-950 border border-amber-400 transition";
+      } else {
+        btn.className = "px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-amber-300 border border-amber-500/30 hover:bg-amber-500/20 transition";
+      }
+      cargarEstado();
+    }
+
+    async function ejecutarBarrido() {
+      const btn = document.getElementById("btn-scan");
+      const label = document.getElementById("scan-label");
+      const partido = document.getElementById("select-partido").value;
+      btn.disabled = true;
+      label.textContent = "Buscando en PBA (4 Pasadas)...";
+
+      try {
+        await fetch("/api/scan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            partidos: partido ? [partido] : null,
+            max_consultas: 18,
+            freshness: "pw"
+          })
+        });
+        await cargarEstado();
+      } finally {
+        btn.disabled = false;
+        label.textContent = "Ejecutar Edición de Barrido Ahora";
+      }
+    }
+
+    async function aprobarCandidata(id, categoria) {
+      await fetch(`/api/palabras-candidatas/${id}/aprobar`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ categoria })
+      });
+      cargarEstado();
+    }
+
+    async function descartarCandidata(id) {
+      await fetch(`/api/palabras-candidatas/${id}/descartar`, { method: "POST" });
+      cargarEstado();
+    }
+
+    async function toggleVigenciaNombre(id, vigente) {
+      await fetch(`/api/nombres-propios/${id}/vigencia`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vigente: Boolean(vigente) })
+      });
+      cargarEstado();
+    }
+
+    function abrirModalNombrePropio() {
+      document.getElementById("modal-nombre-propio").classList.remove("hidden");
+      document.getElementById("modal-nombre-propio").classList.add("flex");
+    }
+
+    function abrirModalIngesta() {
+      document.getElementById("modal-ingesta").classList.remove("hidden");
+      document.getElementById("modal-ingesta").classList.add("flex");
+    }
+
+    function abrirModalDiccionario() {
+      document.getElementById("modal-diccionario").classList.remove("hidden");
+      document.getElementById("modal-diccionario").classList.add("flex");
+    }
+
+    function cerrarModal(id) {
+      document.getElementById(id).classList.add("hidden");
+      document.getElementById(id).classList.remove("flex");
+    }
+
+    async function guardarNombrePropio() {
+      const nombre = document.getElementById("np-nombre").value.trim();
+      const tipo = document.getElementById("np-tipo").value;
+      const partido = document.getElementById("np-partido").value.trim() || "Provincia de Buenos Aires";
+      const categoria = document.getElementById("np-categoria").value;
+      const contexto = document.getElementById("np-contexto").value.trim();
+
+      if (!nombre) return;
+      await fetch("/api/nombres-propios", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nombre, tipo, partido, categoria, contexto })
+      });
+      document.getElementById("np-nombre").value = "";
+      cerrarModal("modal-nombre-propio");
+      cargarEstado();
+    }
+
+    async function procesarIngestaManual() {
+      const autor = document.getElementById("ing-autor").value.trim() || "Grupo Vecinal Facebook";
+      const partido = document.getElementById("ing-partido").value.trim();
+      const url = document.getElementById("ing-url").value.trim();
+      const texto = document.getElementById("ing-texto").value.trim();
+      const pasada = document.getElementById("ing-pasada").value;
+
+      if (!texto) return;
+      await fetch("/api/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          modo: "carga_directa_usuario",
+          posteos: [{ titulo: autor, autor, partido, url, texto, pasada }]
+        })
+      });
+      document.getElementById("ing-texto").value = "";
+      cerrarModal("modal-ingesta");
+      cargarEstado();
+    }
+
+    async function agregarKeywordManual() {
+      const termino = document.getElementById("kw-nuevo").value.trim();
+      const categoria = document.getElementById("kw-categoria").value;
+      if (!termino) return;
+      await fetch("/api/keywords", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ termino, categoria })
+      });
+      document.getElementById("kw-nuevo").value = "";
+      cargarEstado();
+    }
+
+    function abrirModalWhatsApp() {
+      document.getElementById("modal-whatsapp").classList.remove("hidden");
+      document.getElementById("modal-whatsapp").classList.add("flex");
+    }
+
+    async function descargarPdfLocal() {
+      const res = await fetch("/api/pdf/generar", { method: "POST" });
+      const data = await res.json();
+      if (data.ok) {
+        alert("PDF generado exitosamente en:\n" + data.pdf_path);
+      }
+    }
+
+    async function enviarAlertaWhatsApp() {
+      const numero = document.getElementById("wa-numero").value.trim();
+      const btn = document.getElementById("btn-wa-enviar");
+      btn.disabled = true;
+      btn.textContent = "Generando PDF y Alerta...";
+
+      try {
+        const res = await fetch("/api/whatsapp/alerta", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ numero })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          const box = document.getElementById("wa-resultado-box");
+          box.classList.remove("hidden");
+          document.getElementById("wa-status-text").textContent =
+            data.status === "enviado_api"
+              ? "✓ Alerta enviada automáticamente por API a tu WhatsApp!"
+              : "✓ Reporte PDF listo. Hacé clic abajo para abrir WhatsApp:";
+          document.getElementById("wa-pdf-info").textContent =
+            "Mensaje preparado con resumen de reclamos, agenda y nombres propios vigentes.";
+          const linkBtn = document.getElementById("wa-link-btn");
+          linkBtn.href = data.wa_link || `https://api.whatsapp.com/send?phone=${numero}`;
+        }
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Generar PDF y Enviar";
+      }
+    }
+
+    window.addEventListener("DOMContentLoaded", cargarEstado);
+  </script>
+</body>
+</html>
