@@ -6,7 +6,7 @@ Servidor Web y API REST de Termómetro Digital (Monitoreo Facebook PBA).
 import json
 import os
 from datetime import datetime
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_from_directory
 
 from config_pba import (
     ANCLAJES_GENERALES_PBA,
@@ -312,6 +312,12 @@ def api_spikes_notificar():
     return jsonify({"ok": True, "spikes_enviados": len(spikes), "spikes": spikes})
 
 
+@app.route("/reportes_pdf/<path:filename>")
+def servir_pdf(filename):
+    pdf_dir = os.path.join(os.path.dirname(__file__), "reportes_pdf")
+    return send_from_directory(pdf_dir, filename)
+
+
 @app.route("/api/pdf/generar", methods=["POST"])
 def api_generar_pdf():
     payload = request.get_json(silent=True) or {}
@@ -352,6 +358,33 @@ def api_whatsapp_alerta():
     }
 
     res = enviar_alerta_whatsapp(numero, datos_edicion, ruta_pdf=pdf_path or "")
+    return jsonify(res)
+
+
+@app.route("/api/telegram/alerta", methods=["POST"])
+def api_telegram_alerta():
+    payload = request.get_json(silent=True) or {}
+    conn = get_conn()
+    ult_id = payload.get("edicion_id") or conn.execute("SELECT MAX(id) AS m FROM ediciones").fetchone()["m"] or 1
+    edicion = conn.execute("SELECT * FROM ediciones WHERE id = ?", (ult_id,)).fetchone()
+    convocatorias = conn.execute(
+        "SELECT titulo, partido, categoria FROM hallazgos WHERE edicion_id = ? AND es_convocatoria = 1", (ult_id,)
+    ).fetchall()
+    nombres = conn.execute("SELECT nombre FROM nombres_propios WHERE vigente = 1 LIMIT 5").fetchall()
+    conn.close()
+
+    pdf_path = crear_reporte_pdf_edicion(int(ult_id))
+
+    datos_edicion = {
+        "edicion_id": ult_id,
+        "total_hallazgos": edicion["total_hallazgos"] if edicion else 0,
+        "nuevos_hallazgos": edicion["nuevos_hallazgos"] if edicion else 0,
+        "convocatorias": [dict(c) for c in convocatorias],
+        "nombres_propios": [n["nombre"] for n in nombres],
+    }
+
+    from telegram_service import enviar_alerta_telegram
+    res = enviar_alerta_telegram(datos_edicion, ruta_pdf=pdf_path or "")
     return jsonify(res)
 
 

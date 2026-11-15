@@ -145,6 +145,33 @@ def main():
     )
     ruta_rep = generar_reporte_markdown(res["edicion_id"])
     ruta_pdf = crear_reporte_pdf_edicion(res["edicion_id"])
+
+    # Enviar alerta automática por Telegram si está configurado
+    try:
+        from telegram_service import enviar_alerta_telegram
+        conn = get_conn()
+        convocatorias = conn.execute(
+            "SELECT titulo, partido, categoria FROM hallazgos WHERE edicion_id = ? AND es_convocatoria = 1",
+            (res["edicion_id"],),
+        ).fetchall()
+        nombres = conn.execute(
+            "SELECT nombre FROM nombres_propios WHERE vigente = 1 LIMIT 5"
+        ).fetchall()
+        conn.close()
+
+        datos_edicion = {
+            "edicion_id": res["edicion_id"],
+            "total_hallazgos": res.get("total_hallazgos", 0),
+            "nuevos_hallazgos": res.get("nuevos_hallazgos", 0),
+            "convocatorias": [dict(c) for c in convocatorias],
+            "nombres_propios": [n["nombre"] for n in nombres],
+        }
+        res_tg = enviar_alerta_telegram(datos_edicion, ruta_pdf=ruta_pdf or "")
+        if res_tg.get("ok"):
+            print("✓ Alerta y PDF enviados automáticamente por Telegram")
+    except Exception as e:
+        print("Aviso Telegram:", e)
+
     print(json.dumps({**res, "reporte_markdown": ruta_rep, "reporte_pdf": ruta_pdf}, ensure_ascii=False, indent=2))
 
 
