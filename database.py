@@ -84,7 +84,8 @@ def init_db() -> None:
             ultima_edicion_id INTEGER,
             apariciones INTEGER DEFAULT 1,
             vigente INTEGER DEFAULT 1,
-            creado_en TEXT NOT NULL
+            creado_en TEXT NOT NULL,
+            fuente_url TEXT DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS palabras_candidatas (
@@ -98,7 +99,8 @@ def init_db() -> None:
             ediciones_consecutivas INTEGER DEFAULT 1,
             total_apariciones INTEGER DEFAULT 1,
             estado TEXT DEFAULT 'observando',
-            actualizado_en TEXT NOT NULL
+            actualizado_en TEXT NOT NULL,
+            fuente_url TEXT DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS palabras_clave_extra (
@@ -274,6 +276,7 @@ def registrar_nombre_propio(
     categoria_origen: str,
     contexto: str,
     edicion_id: int,
+    fuente_url: str = "",
 ) -> None:
     nombre_limpio = nombre.strip()
     if len(nombre_limpio) < 3:
@@ -291,18 +294,19 @@ def registrar_nombre_propio(
             UPDATE nombres_propios
             SET ultima_edicion_id = ?,
                 apariciones = apariciones + 1,
-                contexto = CASE WHEN ? != '' THEN ? ELSE contexto END
+                contexto = CASE WHEN ? != '' THEN ? ELSE contexto END,
+                fuente_url = CASE WHEN ? != '' THEN ? ELSE fuente_url END
             WHERE id = ?
             """,
-            (edicion_id, contexto, contexto, row["id"]),
+            (edicion_id, contexto, contexto, fuente_url, fuente_url, row["id"]),
         )
     else:
         cur.execute(
             """
             INSERT INTO nombres_propios (
                 nombre, tipo, partido, categoria_origen, contexto,
-                primera_edicion_id, ultima_edicion_id, apariciones, vigente, creado_en
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?)
+                primera_edicion_id, ultima_edicion_id, apariciones, vigente, creado_en, fuente_url
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
             """,
             (
                 nombre_limpio,
@@ -313,6 +317,7 @@ def registrar_nombre_propio(
                 edicion_id,
                 edicion_id,
                 ahora,
+                fuente_url,
             ),
         )
     conn.commit()
@@ -325,6 +330,7 @@ def registrar_palabra_candidata(
     partido_origen: str,
     ejemplo_texto: str,
     edicion_id: int,
+    fuente_url: str = "",
 ) -> Dict[str, Any]:
     """
     Registra una palabra/frase emergente detectada en la Pasada Abierta ("vecinos" + partido).
@@ -349,8 +355,8 @@ def registrar_palabra_candidata(
             INSERT INTO palabras_candidatas (
                 palabra, categoria_sugerida, partido_origen, ejemplo_texto,
                 primera_edicion_id, ultima_edicion_id, ediciones_consecutivas,
-                total_apariciones, estado, actualizado_en
-            ) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'observando', ?)
+                total_apariciones, estado, actualizado_en, fuente_url
+            ) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'observando', ?, ?)
             """,
             (
                 p_clean,
@@ -360,6 +366,7 @@ def registrar_palabra_candidata(
                 edicion_id,
                 edicion_id,
                 ahora,
+                fuente_url,
             ),
         )
         conn.commit()
@@ -394,7 +401,8 @@ def registrar_palabra_candidata(
             partido_origen = ?,
             ejemplo_texto = ?,
             estado = ?,
-            actualizado_en = ?
+            actualizado_en = ?,
+            fuente_url = CASE WHEN ? != '' THEN ? ELSE fuente_url END
         WHERE id = ?
         """,
         (
@@ -404,6 +412,8 @@ def registrar_palabra_candidata(
             ejemplo_texto[:240] or row["ejemplo_texto"],
             nuevo_estado,
             ahora,
+            fuente_url,
+            fuente_url,
             row["id"],
         ),
     )

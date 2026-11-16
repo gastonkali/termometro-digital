@@ -654,6 +654,7 @@ def ejecutar_barrido(
                     categoria_origen=info["categoria"],
                     contexto=limpiar_contexto_nombre(r.get("titulo", "")),
                     edicion_id=edicion_id,
+                    fuente_url=r.get("url", ""),
                 )
 
             if item_q["pasada"] == "pasada_abierta":
@@ -666,6 +667,7 @@ def ejecutar_barrido(
                         partido_origen=info["partido"],
                         ejemplo_texto=comb_texto,
                         edicion_id=edicion_id,
+                        fuente_url=r.get("url", ""),
                     )
                     if res_cand.get("status") == "propuesta":
                         nuevas_propuestas.append(palabra_cand)
@@ -753,6 +755,7 @@ def ingerir_posteos_directos_facebook(
                 categoria_origen=info["categoria"],
                 contexto=limpiar_contexto_nombre(texto),
                 edicion_id=edicion_id,
+                fuente_url=url,
             )
 
         if pasada == "pasada_abierta" or "vecinos" in texto.lower():
@@ -765,6 +768,7 @@ def ingerir_posteos_directos_facebook(
                     partido_origen=info["partido"],
                     ejemplo_texto=texto,
                     edicion_id=edicion_id,
+                    fuente_url=url,
                 )
 
     cerrar_edicion(

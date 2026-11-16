@@ -827,15 +827,18 @@ def generar_html_reporte(
     <table class="data-table anexo-table">
       <thead>
         <tr>
-          <th style="width: 24%;">Elemento</th>
-          <th style="width: 46%;">Detalle</th>
-          <th style="width: 30%;">Estado</th>
+          <th style="width: 22%;">Elemento</th>
+          <th style="width: 44%;">Detalle y contexto citado</th>
+          <th style="width: 24%;">Estado</th>
+          <th style="width: 10%; text-align: center;">Link</th>
         </tr>
       </thead>
       <tbody>
 """
 
     filas_anexo_figuras = 0
+    import urllib.parse
+
     for nr in nombres_rows[:4]:
         n_nombre = nr["nombre"]
         n_tipo = nr.get("tipo", "Figura / Persona")
@@ -848,12 +851,17 @@ def generar_html_reporte(
             if nr.get("vigente", 1)
             else '<span class="estado-col estado-descartado">Descartado</span>'
         )
+        n_url = (nr.get("fuente_url") or "").strip()
+        if not n_url or n_url == "#":
+            q = f"{n_nombre} {n_partido}".strip()
+            n_url = f"https://www.facebook.com/search/posts?q={urllib.parse.quote_plus(q)}"
 
         html += f"""
         <tr>
           <td><strong>“{html_lib.escape(n_nombre)}”</strong><br/><span style="font-size: 6.8pt; color: #64748b;">({html_lib.escape(n_tipo)})</span></td>
           <td><strong>{html_lib.escape(n_partido)}:</strong> {html_lib.escape(n_ctx)} ({menciones_str})</td>
           <td class="estado-col">{estado_badge}</td>
+          <td style="text-align: center;"><a class="link-inline" href="{n_url}">ver ↗</a></td>
         </tr>
         """
         filas_anexo_figuras += 1
@@ -869,12 +877,17 @@ def generar_html_reporte(
             if p_estado == "observando"
             else f'<span class="estado-col estado-descartado">{html_lib.escape(p_estado)}</span>'
         )
+        p_url = (pr.get("fuente_url") or "").strip()
+        if not p_url or p_url == "#":
+            q = f"{p_palabra} {p_partido}".strip()
+            p_url = f"https://www.facebook.com/search/posts?q={urllib.parse.quote_plus(q)}"
 
         html += f"""
         <tr>
           <td><strong>{html_lib.escape(p_palabra)}</strong><br/><span style="font-size: 6.8pt; color: #64748b;">Eje: {html_lib.escape(p_cat)}</span></td>
           <td><strong>{html_lib.escape(p_partido)}:</strong> {html_lib.escape(p_ej)}</td>
           <td class="estado-col">{estado_badge}</td>
+          <td style="text-align: center;"><a class="link-inline" href="{p_url}">ver ↗</a></td>
         </tr>
         """
         filas_anexo_figuras += 1
@@ -882,7 +895,7 @@ def generar_html_reporte(
     if filas_anexo_figuras == 0:
         html += """
         <tr>
-          <td colspan="3" style="text-align: center; color: #64748b; font-style: italic; padding: 10px;">
+          <td colspan="4" style="text-align: center; color: #64748b; font-style: italic; padding: 10px;">
             Sin figuras públicas ni términos atípicos nuevos detectados en este corte.
           </td>
         </tr>
@@ -891,6 +904,7 @@ def generar_html_reporte(
     html += f"""
       </tbody>
     </table>
+    <div class="clarification-note">Los links de publicaciones dirigen a la publicación original verificada en la plataforma correspondiente.</div>
     <div class="doc-footer">
       Reporte generado por Termómetro Digital · Cobertura: 135 municipios bonaerenses · Excluye CABA y otras provincias · Versión modelo de Alertas
     </div>
