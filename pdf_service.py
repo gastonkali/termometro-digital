@@ -301,27 +301,52 @@ def generar_html_reporte(edicion_id: int) -> str:
     html += '<div class="section-title">📡 Hallazgos Recientes Destacados en PBA</div>'
     for h in hallazgos[:15]:
         texto_raw = (h['texto'] or "").strip()
+        if " [Comentarios:" in texto_raw:
+            texto_raw = texto_raw.split(" [Comentarios:")[0].strip()
         partes = texto_raw.split("💬 Comentarios destacados de vecinos:")
         texto_principal = partes[0].strip()
         if len(texto_principal) > 350:
             texto_principal = texto_principal[:350] + "..."
 
         bloque_comentarios = ""
-        if len(partes) > 1 and partes[1].strip():
-            comentarios_html = ""
+        comentarios_lista = []
+        try:
+            if h["comentarios_json"]:
+                raw_json = json.loads(h["comentarios_json"])
+                if isinstance(raw_json, list):
+                    comentarios_lista = [str(x) for x in raw_json if x]
+        except Exception:
+            pass
+
+        if not comentarios_lista and len(partes) > 1 and partes[1].strip():
             for c in partes[1].strip().split("\n"):
                 c_limpio = c.lstrip("• ").strip()
-                if c_limpio:
-                    comentarios_html += f"<li><em>{c_limpio}</em></li>"
-            if comentarios_html:
-                bloque_comentarios = f"""
-                <div style="margin-top: 8px; border-top: 1px dashed #cbd5e1; padding-top: 6px;">
-                  <strong style="font-size: 8pt; color: #0284c7;">💬 Comentarios destacados de vecinos:</strong>
-                  <ul style="margin: 3px 0; padding-left: 16px; font-size: 8.5pt; color: #334155;">
-                    {comentarios_html}
-                  </ul>
-                </div>
-                """
+                if c_limpio and not c_limpio.startswith("[Comentarios:"):
+                    comentarios_lista.append(c_limpio)
+
+        if comentarios_lista:
+            comentarios_html = "".join(f"<li><em>{c}</em></li>" for c in comentarios_lista)
+            bloque_comentarios = f"""
+            <div style="margin-top: 8px; border-top: 1px dashed #cbd5e1; padding-top: 6px;">
+              <strong style="font-size: 8pt; color: #0284c7;">💬 Comentarios destacados de vecinos:</strong>
+              <ul style="margin: 3px 0; padding-left: 16px; font-size: 8.5pt; color: #334155;">
+                {comentarios_html}
+              </ul>
+            </div>
+            """
+
+        bloque_imagen = ""
+        img_url = ""
+        try:
+            img_url = h["imagen_url"] or ""
+        except Exception:
+            pass
+        if img_url:
+            bloque_imagen = f"""
+            <div style="margin: 8px 0; text-align: center; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px;">
+              <img src="{img_url}" style="max-height: 220px; max-width: 100%; border-radius: 4px; object-fit: contain;" />
+            </div>
+            """
 
         html += f"""
         <div class="item-card">
@@ -331,6 +356,7 @@ def generar_html_reporte(edicion_id: int) -> str:
             <span class="badge badge-cat">🏷️ {h['categoria'].upper()}</span>
           </div>
           <div class="item-title">{h['titulo']}</div>
+          {bloque_imagen}
           <div class="preview-box">
             <div class="preview-title">Vista previa de la publicación:</div>
             <p class="preview-text">"{texto_principal}"</p>

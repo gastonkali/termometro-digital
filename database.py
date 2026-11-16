@@ -68,6 +68,8 @@ def init_db() -> None:
             relevancia INTEGER DEFAULT 50,
             fijado INTEGER DEFAULT 0,
             descartado INTEGER DEFAULT 0,
+            imagen_url TEXT,
+            comentarios_json TEXT DEFAULT '[]',
             FOREIGN KEY(edicion_id) REFERENCES ediciones(id)
         );
 
@@ -214,8 +216,8 @@ def insertar_hallazgo(datos: Dict[str, Any]) -> bool:
                 edicion_id, fecha_deteccion, fecha_publicacion, fuente, url, url_hash,
                 titulo, texto, autor, categoria, termino_detectado, variante_usada,
                 partido, anclaje_usado, pasada, es_convocatoria, modificadores_agenda,
-                nombres_propios, relevancia
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                nombres_propios, relevancia, imagen_url, comentarios_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 datos.get("edicion_id", 1),
@@ -237,13 +239,34 @@ def insertar_hallazgo(datos: Dict[str, Any]) -> bool:
                 json.dumps(datos.get("modificadores_agenda", []), ensure_ascii=False),
                 json.dumps(datos.get("nombres_propios", []), ensure_ascii=False),
                 datos.get("relevancia", 70),
+                datos.get("imagen_url", ""),
+                json.dumps(datos.get("comentarios", []), ensure_ascii=False),
             ),
         )
         conn.commit()
         conn.close()
         return True
     except sqlite3.IntegrityError:
-        conn.close()
+        try:
+            updates = []
+            params = []
+            if datos.get("imagen_url"):
+                updates.append("imagen_url = ?")
+                params.append(datos.get("imagen_url"))
+            if datos.get("comentarios"):
+                updates.append("comentarios_json = ?")
+                params.append(json.dumps(datos.get("comentarios", []), ensure_ascii=False))
+            if datos.get("edicion_id"):
+                updates.append("edicion_id = ?")
+                params.append(datos.get("edicion_id"))
+            if updates:
+                params.append(u_hash)
+                cur.execute(f"UPDATE hallazgos SET {', '.join(updates)} WHERE url_hash = ?", params)
+                conn.commit()
+        except Exception:
+            pass
+        finally:
+            conn.close()
         return False
 
 

@@ -721,6 +721,8 @@ def ingerir_posteos_directos_facebook(
                 "titulo": titulo,
                 "texto": texto,
                 "autor": p.get("autor", "Publicación Vecinal"),
+                "imagen_url": p.get("imagen_url", ""),
+                "comentarios": p.get("comentarios", []),
                 **info,
             }
         )

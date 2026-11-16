@@ -11,6 +11,7 @@ user_session_browser/
 
 # Reportes generados localmente
 reportes_pdf/*.pdf
+reportes_pdf/temp_reporte.html
 !reportes_pdf/.gitkeep
 reportes/*.md
 !reportes/.gitkeep

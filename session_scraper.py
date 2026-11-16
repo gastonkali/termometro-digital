@@ -86,7 +86,49 @@ def limpiar_url_fb(href: str) -> str:
     return href.split("?")[0] if href else ""
 
 
-def extraer_comentarios_facebook(context, post_url: str, max_comentarios: int = 3) -> List[str]:
+def extraer_comentarios_twitter(context, tweet_url: str, max_replies: int = 3) -> List[str]:
+    """
+    Abre el tweet directo en una pestaña en segundo plano y extrae respuestas/comentarios de vecinos.
+    """
+    if not tweet_url or "/status/" not in tweet_url:
+        return []
+    replies = []
+    p_tab = None
+    try:
+        p_tab = context.new_page()
+        p_tab.goto(tweet_url, timeout=18000, wait_until="domcontentloaded")
+        time.sleep(2.5)
+        p_tab.mouse.wheel(0, 400)
+        time.sleep(1)
+
+        replies = p_tab.evaluate(r"""() => {
+            const out = [];
+            const arts = document.querySelectorAll('article[data-testid="tweet"]');
+            for (let i = 1; i < arts.length && out.length < 3; i++) {
+                const userEl = arts[i].querySelector('[data-testid="User-Name"]');
+                const user = userEl ? userEl.innerText.split('\n')[0] : 'Vecino';
+                const textEl = arts[i].querySelector('[data-testid="tweetText"]');
+                if (textEl) {
+                    const txt = (textEl.innerText || '').trim().replace(/\n+/g, ' ');
+                    if (txt.length > 5) {
+                        out.push(`${user}: "${txt}"`);
+                    }
+                }
+            }
+            return out;
+        }""")
+    except Exception:
+        pass
+    finally:
+        if p_tab:
+            try:
+                p_tab.close()
+            except Exception:
+                pass
+    return replies
+
+
+def extraer_comentarios_facebook(context, post_url: str, max_comentarios: int = 4) -> List[str]:
     """
     Abre la URL directa del posteo en una pestaña en segundo plano y extrae
     los comentarios reales de los vecinos.
@@ -100,16 +142,19 @@ def extraer_comentarios_facebook(context, post_url: str, max_comentarios: int = 
     p_tab = None
     try:
         p_tab = context.new_page()
-        p_tab.goto(post_url, timeout=18000, wait_until="domcontentloaded")
-        time.sleep(2.5)
+        p_tab.goto(post_url, timeout=20000, wait_until="domcontentloaded")
+        time.sleep(3)
+        p_tab.mouse.wheel(0, 500)
+        time.sleep(1)
 
-        comentarios = p_tab.evaluate("""() => {
+        comentarios = p_tab.evaluate(r"""() => {
             const out = [];
-            const nodes = document.querySelectorAll('div[role="article"], ul > li div[dir="auto"]');
+            const commentNodes = document.querySelectorAll('div[aria-label*="Comentario"], div[aria-label*="Comment"]');
+            const nodes = commentNodes.length > 0 ? commentNodes : document.querySelectorAll('div[role="article"], ul > li div[dir="auto"]');
             for (const n of nodes) {
                 const txt = (n.innerText || '').trim();
-                if (!txt || txt.length < 8 || txt.length > 350) continue;
-                const lines = txt.split('\\n').map(l => l.trim()).filter(l => l && !['Responder', 'Me gusta', 'Compartir', 'Ver más', 'Ver traducción'].includes(l));
+                if (!txt || txt.length < 8 || txt.length > 400) continue;
+                const lines = txt.split('\n').map(l => l.trim()).filter(l => l && !['Responder', 'Me gusta', 'Compartir', 'Ver más', 'Ver traducción'].includes(l));
                 if (lines.length > 0) {
                     const clean = lines.join(' - ');
                     if (clean.length > 8 && !out.includes(clean)) {
@@ -117,10 +162,10 @@ def extraer_comentarios_facebook(context, post_url: str, max_comentarios: int = 
                     }
                 }
             }
-            return out.slice(0, 3);
+            return out.slice(0, 4);
         }""")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  [Aviso FB Comentarios]: {e}")
     finally:
         if p_tab:
             try:
@@ -133,7 +178,7 @@ def extraer_comentarios_facebook(context, post_url: str, max_comentarios: int = 
 def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> List[Dict[str, Any]]:
     """
     Navega a la URL de búsqueda de Facebook, hace scroll y extrae
-    texto real de publicaciones, enlaces directos y comentarios de vecinos.
+    texto real de publicaciones, imágenes adjuntas y comentarios de vecinos.
     """
     from config_pba import es_exclusion_geografica, es_texto_espanol
 
@@ -146,52 +191,134 @@ def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> Lis
             page.mouse.wheel(0, 1500)
             time.sleep(1.5)
 
-        raw_items = page.evaluate("""() => {
+        raw_items = page.evaluate(r"""() => {
             const results = [];
-            const main = document.querySelector('div[role="main"]') || document.body;
-            const textElements = main.querySelectorAll('div[dir="auto"]');
             const seen = new Set();
+            const main = document.querySelector('div[role="main"]') || document.body;
 
-            for (const el of textElements) {
-                const text = (el.innerText || '').trim();
-                // Descartar textos de interfaz o muy cortos
-                if (text.length < 40 || seen.has(text)) continue;
-                if (text.includes('Resultados de') || text.includes('Filtros') || text.includes('Facebook')) continue;
-                if (text.startsWith('Amigos') || text.startsWith('Grupos')) continue;
-                seen.add(text);
+            // 1. Recorrer tarjetas directas del feed
+            const feed = main.querySelector('div[role="feed"]');
+            const cards = feed ? Array.from(feed.children) : Array.from(main.querySelectorAll('div[role="article"]'));
 
-                // Buscar autor y enlaces directos en el contenedor
-                let directUrl = '';
-                let autor = "Vecinos en Facebook";
+            for (const card of cards) {
+                const rawLines = (card.innerText || '').split('\n').map(l => l.trim()).filter(l => {
+                    if (!l || l.length < 3 || l === 'Facebook' || l === '·' || l === 'Seguir' || l === 'Unirte') return false;
+                    if (l.includes('Ver más') || l.includes('Publicación compartida') || l.includes('Contenido sensible') || l.includes('Puede ser una imagen')) return false;
+                    if (/^\d+$/.test(l)) return false;
+                    if (l.length < 15 && l.includes('\u034f')) return false;
+                    return true;
+                });
 
-                let cur = el;
-                for (let i = 0; i < 8 && cur; i++) {
-                    const links = Array.from(cur.querySelectorAll('a[href]'));
-                    for (const a of links) {
-                        const h = a.href;
-                        if (!h || h.includes('/search/')) continue;
+                if (rawLines.length === 0) continue;
+                const autor = rawLines[0];
+                const bodyLines = rawLines.slice(1).filter(l => l.length > 5 && !l.includes('de 202'));
+                const texto = bodyLines.join('\n');
+                if (texto.length < 30 || seen.has(texto)) continue;
+                seen.add(texto);
 
-                        if (h.includes('/photo/') || h.includes('/posts/') || h.includes('/permalink/') || h.includes('/stories/')) {
-                            if (!directUrl) directUrl = h;
-                        }
-                        if (h.includes('/groups/') && !directUrl) {
-                            directUrl = h;
-                        }
-                        const authorText = (a.innerText || '').trim();
-                        if (authorText && authorText.length < 50 && !authorText.includes('Facebook') && !authorText.includes('foto')) {
-                            if (autor === "Vecinos en Facebook") autor = authorText;
-                            if (!directUrl && !h.includes('/search/')) directUrl = h;
+                let imgUrl = '';
+                const imgs = Array.from(card.querySelectorAll('img'));
+                for (const im of imgs) {
+                    const s = im.src || '';
+                    if (s && (s.includes('scontent') || s.includes('external.') || s.includes('fbcdn.net')) && !s.includes('emoji') && !s.includes('rsrc') && !s.includes('static')) {
+                        const w = im.naturalWidth || im.width || 0;
+                        const h = im.naturalHeight || im.height || 0;
+                        if (w > 120 || h > 90 || (!w && !s.includes('p32x32') && !s.includes('p40x40') && !s.includes('p50x50'))) {
+                            imgUrl = s;
+                            break;
                         }
                     }
-                    cur = cur.parentElement;
+                }
+
+                let directUrl = '';
+                const links = Array.from(card.querySelectorAll('a[href]'));
+                for (const a of links) {
+                    const h = a.href || '';
+                    if (!h || h.includes('/search/')) continue;
+                    if (h.includes('/photo/') || h.includes('/posts/') || h.includes('/permalink/') || h.includes('fbid=') || h.includes('/videos/')) {
+                        directUrl = h;
+                        break;
+                    }
+                }
+                if (!directUrl) {
+                    for (const a of links) {
+                        const h = a.href || '';
+                        if (h && !h.includes('/search/') && !h.includes('/hashtag/') && !h.includes('/login') && !h.includes('/home.php')) {
+                            directUrl = h;
+                            break;
+                        }
+                    }
                 }
 
                 results.push({
                     autor: autor,
-                    texto: text,
-                    url: directUrl
+                    texto: texto,
+                    url: directUrl,
+                    imgUrl: imgUrl
                 });
             }
+
+            // 2. Fallback con divs de texto si el feed arrojó pocos
+            if (results.length < 3) {
+                const textElements = main.querySelectorAll('div[dir="auto"]');
+                for (const el of textElements) {
+                    const text = (el.innerText || '').trim();
+                    if (text.length < 40 || seen.has(text)) continue;
+                    if (text.includes('Resultados de') || text.includes('Filtros') || text.includes('Facebook')) continue;
+                    if (text.startsWith('Amigos') || text.startsWith('Grupos')) continue;
+                    seen.add(text);
+
+                    let directUrl = '';
+                    let autor = "Vecinos en Facebook";
+                    let imgUrl = '';
+
+                    let cur = el;
+                    for (let i = 0; i < 8 && cur; i++) {
+                        const links = Array.from(cur.querySelectorAll('a[href]'));
+                        for (const a of links) {
+                            const h = a.href;
+                            if (!h || h.includes('/search/')) continue;
+                            if (h.includes('/photo/') || h.includes('/posts/') || h.includes('/permalink/') || h.includes('/stories/') || h.includes('fbid=')) {
+                                if (!directUrl) directUrl = h;
+                            }
+                            if (h.includes('/groups/') && !directUrl) {
+                                directUrl = h;
+                            }
+                            const authorText = (a.innerText || '').trim();
+                            if (authorText && authorText.length < 50 && !authorText.includes('Facebook') && !authorText.includes('foto') && !authorText.startsWith('Puede ser') && !authorText.includes('Indicador') && !authorText.includes('Activo') && !authorText.includes('+')) {
+                                if (autor === "Vecinos en Facebook") autor = authorText;
+                                if (!directUrl && !h.includes('/search/')) directUrl = h;
+                            }
+                        }
+
+                        if (!imgUrl) {
+                            const imgs = Array.from(cur.querySelectorAll('img'));
+                            for (const im of imgs) {
+                                const s = im.src || '';
+                                if (!s || s.includes('emoji') || s.includes('rsrc') || s.includes('static')) continue;
+                                if (s.includes('p32x32') || s.includes('p40x40') || s.includes('p50x50') || s.includes('p60x60')) continue;
+                                if (s.includes('scontent') || s.includes('external.') || s.includes('fbcdn.net')) {
+                                    const w = im.naturalWidth || im.width || 0;
+                                    const h = im.naturalHeight || im.height || 0;
+                                    if (w > 120 || h > 90 || (!w && !s.includes('emoji'))) {
+                                        imgUrl = s;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        cur = cur.parentElement;
+                    }
+
+                    results.push({
+                        autor: autor,
+                        texto: text,
+                        url: directUrl,
+                        imgUrl: imgUrl
+                    });
+                }
+            }
+
             return results;
         }""")
 
@@ -212,7 +339,7 @@ def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> Lis
             comentarios = []
             if url_final and any(k in url_final for k in ["/photo/", "/posts/", "/permalink/", "fbid="]):
                 print(f"  💬 Extrayendo comentarios de vecinos para: {autor}...")
-                comentarios = extraer_comentarios_facebook(page.context, url_final, max_comentarios=3)
+                comentarios = extraer_comentarios_facebook(page.context, url_final, max_comentarios=4)
 
             texto_con_comentarios = txt
             if comentarios:
@@ -229,6 +356,7 @@ def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> Lis
                 "titulo": f"{autor}: {primer_renglon}",
                 "texto": texto_con_comentarios,
                 "comentarios": comentarios,
+                "imagen_url": item.get("imgUrl", ""),
                 "fecha_publicacion": "Detectado en vivo con mi sesión"
             })
             if len(posteos) >= max_items:
@@ -290,13 +418,27 @@ def extraer_posteos_twitter(page, url_busqueda: str, max_items: int = 8) -> List
                     if href:
                         enlace = f"https://x.com{href}" if not href.startswith("http") else href
 
+                img_el = art.locator('div[data-testid="tweetPhoto"] img').first
+                img_url = img_el.get_attribute("src") if img_el.count() else ""
+
+                comentarios_tw = []
+                if enlace and "/status/" in enlace and len(tweets) < 2:
+                    print(f"  💬 Extrayendo respuestas de vecinos en X para: {autor}...")
+                    comentarios_tw = extraer_comentarios_twitter(page.context, enlace, max_replies=3)
+
+                texto_con_comentarios = texto
+                if comentarios_tw:
+                    texto_con_comentarios += "\n\n💬 Comentarios destacados de vecinos:\n" + "\n".join(f"• {c}" for c in comentarios_tw)
+
                 primer_renglon = texto.split("\n")[0][:75].strip()
                 tweets.append({
                     "fuente": "X / Twitter (Sesión Abierta)",
                     "autor": autor,
                     "url": enlace,
                     "titulo": f"{autor}: {primer_renglon}",
-                    "texto": texto,
+                    "texto": texto_con_comentarios,
+                    "comentarios": comentarios_tw,
+                    "imagen_url": img_url,
                     "fecha_publicacion": "En vivo"
                 })
                 if len(tweets) >= max_items:
@@ -357,7 +499,49 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
                 "modo": "sesion_abierta_playwright",
                 "posteos": total_recolectados
             }, timeout=15)
-            print("Resultado de ingesta en base local:", resp.json())
+            data_resp = resp.json()
+            print("Resultado de ingesta en base local:", data_resp)
+
+            edicion_id = data_resp.get("resultado", {}).get("edicion_id")
+            if edicion_id:
+                print(f"\n📄 Compilando reporte PDF para Edición #{edicion_id} con imágenes y comentarios...")
+                from pdf_service import crear_reporte_pdf_edicion
+                ruta_pdf = crear_reporte_pdf_edicion(edicion_id)
+                print(f"✓ PDF generado en: {ruta_pdf}")
+
+                try:
+                    from telegram_service import enviar_alerta_telegram
+                    from database import get_conn
+                    conn = get_conn()
+                    convocatorias = conn.execute(
+                        "SELECT titulo, partido, categoria FROM hallazgos WHERE edicion_id = ? AND es_convocatoria = 1",
+                        (edicion_id,),
+                    ).fetchall()
+                    nombres = conn.execute(
+                        "SELECT nombre FROM nombres_propios WHERE vigente = 1 LIMIT 5"
+                    ).fetchall()
+                    hallazgos_dest = conn.execute(
+                        "SELECT partido, autor, texto FROM hallazgos WHERE edicion_id = ? AND descartado = 0 ORDER BY id DESC LIMIT 3",
+                        (edicion_id,),
+                    ).fetchall()
+                    conn.close()
+
+                    datos_edicion = {
+                        "edicion_id": edicion_id,
+                        "total_hallazgos": data_resp.get("resultado", {}).get("procesados", len(total_recolectados)),
+                        "nuevos_hallazgos": data_resp.get("resultado", {}).get("nuevos", 0),
+                        "convocatorias": [dict(c) for c in convocatorias],
+                        "nombres_propios": [n["nombre"] for n in nombres],
+                        "hallazgos_destacados": [dict(h) for h in hallazgos_dest],
+                    }
+                    print("📲 Enviando reporte y PDF a Telegram...")
+                    res_tg = enviar_alerta_telegram(datos_edicion, ruta_pdf=ruta_pdf or "")
+                    if res_tg.get("ok"):
+                        print("✓ ¡Alerta y PDF enviados exitosamente por Telegram!")
+                    else:
+                        print("Aviso Telegram:", res_tg)
+                except Exception as e_tg:
+                    print("Error enviando por Telegram:", e_tg)
         except Exception as e:
             print("Error enviando al backend:", e)
 
