@@ -570,6 +570,10 @@ def es_url_publicacion_valida(url: str) -> bool:
     if any(k in u for k in ["/search/", "/home.php", "/login", "/messages", "/notifications", "/hashtag/", "/stories/"]):
         return False
 
+    # Excluir enlaces para compartir grupos completos
+    if "/share/g/" in u:
+        return False
+
     # Twitter / X: debe ser un tweet específico
     if "x.com" in u or "twitter.com" in u:
         return "/status/" in u
@@ -578,11 +582,15 @@ def es_url_publicacion_valida(url: str) -> bool:
     if "instagram.com" in u:
         return "/p/" in u or "/reel/" in u
 
-    # Facebook: debe ser permalink de post, foto, reel o video
+    # Facebook: debe ser publicación individual, foto, reel, video o share oficial de post
     if "facebook.com" in u or "fb.com" in u:
+        if "/share/p/" in u or "/share/v/" in u or "/share/r/" in u:
+            return True
+        if "/photo/" in u or "/photo.php" in u or "fbid=" in u:
+            return True
         if "/groups/" in u:
             return "/permalink/" in u or "/posts/" in u
-        if any(k in u for k in ["/posts/", "/photo/", "fbid=", "/reel/", "/watch/?v=", "/videos/", "story_fbid=", "permalink.php"]):
+        if any(k in u for k in ["/posts/", "/reel/", "/watch/?v=", "/videos/", "story_fbid=", "permalink.php"]):
             return True
         return False
 
@@ -605,13 +613,14 @@ def es_texto_basura_ui(autor: str, texto: str) -> bool:
         "publicaciones del feed", "reels y videos cortos", "ordenar feed", "escribe un comentario",
         "detalles del grupo", "añadir a tu publicación", "compartir en tu perfil",
         "cambió su foto de portada", "actualizó su foto del perfil", "activo hace",
-        "enviar mensaje", "precio:", "alquilo dpto", "vendo ropero"
+        "enviar mensaje", "precio:", "alquilo dpto", "vendo ropero",
+        "giphy", "tenor", "sticker", "emoji", "en tu casa", "tenía la heladera vacía", "no alcanza ni para los remedios"
     ]
     if any(p in a for p in patrones):
         return True
     if any(p in t for p in patrones):
         return True
-    if a in ["activo", "facebook", "desconocido", "usuario", "participante"]:
+    if a in ["activo", "facebook", "desconocido", "usuario", "participante", "giphy", "tenor"]:
         if len(t) < 30 or any(p in t for p in patrones):
             return True
     return False

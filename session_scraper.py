@@ -36,6 +36,7 @@ def lanzar_navegador_sesion(headless: bool = False):
         "user_data_dir": SESSION_DIR,
         "headless": headless,
         "viewport": {"width": 1280, "height": 850},
+        "permissions": ["clipboard-read", "clipboard-write"],
         "args": [
             "--disable-blink-features=AutomationControlled",
             "--start-maximized"
@@ -55,6 +56,43 @@ def lanzar_navegador_sesion(headless: bool = False):
 
 import re
 import urllib.parse
+
+
+def copiar_enlace_compartir_facebook(page, card_locator) -> str:
+    """
+    Hace clic en 'Compartir' -> 'Copiar enlace' en la tarjeta de publicación
+    para obtener el enlace canónico directo según el método oficial de Facebook.
+    """
+    try:
+        share_btn = card_locator.locator(
+            'div[role="button"]:has-text("Compartir"), div[aria-label="Compartir"], div[aria-label*="Compartir esta publicación"]'
+        ).last
+        if share_btn.count() == 0:
+            return ""
+        share_btn.scroll_into_view_if_needed()
+        time.sleep(0.3)
+        share_btn.click()
+        time.sleep(0.6)
+
+        copy_btn = page.locator(
+            'div[role="menuitem"]:has-text("Copiar enlace"), div[role="button"]:has-text("Copiar enlace"), span:has-text("Copiar enlace")'
+        ).first
+        res_url = ""
+        if copy_btn.count() > 0:
+            copy_btn.click()
+            time.sleep(0.4)
+            clip = page.evaluate('() => navigator.clipboard.readText()')
+            if clip and clip.startswith("http"):
+                res_url = clip.strip()
+        page.keyboard.press("Escape")
+        time.sleep(0.3)
+        return res_url
+    except Exception:
+        try:
+            page.keyboard.press("Escape")
+        except Exception:
+            pass
+        return ""
 
 
 def limpiar_url_fb(href: str) -> str:
@@ -80,23 +118,23 @@ def limpiar_url_fb(href: str) -> str:
         return ""
     if href in ["https://www.facebook.com", "https://www.facebook.com/", "https://facebook.com", "https://facebook.com/"]:
         return ""
-
-    # 2. Post o permalink en grupo
-    if "/groups/" in href:
-        if "/permalink/" in href or "/posts/" in href:
-            return href.split("?")[0].rstrip("/") + "/"
-        # El grupo general NO es una publicación: descartar
+    # Enlaces de compartir grupo NO son publicaciones
+    if "/share/g/" in href:
         return ""
 
-    # 3. Post directo de página o perfil
-    if "/posts/" in href:
-        return href.split("?")[0].rstrip("/")
+    # 2. Enlaces oficiales de compartir publicación / video / reel
+    if "/share/p/" in href or "/share/v/" in href or "/share/r/" in href:
+        return href.split("?")[0].rstrip("/") + "/"
 
-    # 4. Foto con fbid
-    if ("/photo/" in href or "/photo.php" in href) and "fbid=" in href:
+    # 3. Foto con fbid (prioridad máxima sobre permalinks genéricos de grupo)
+    if ("/photo/" in href or "/photo.php" in href or "fbid=" in href):
         m = re.search(r"fbid=([0-9]+)", href)
         if m:
             return f"https://www.facebook.com/photo/?fbid={m.group(1)}"
+
+    # 4. Post directo de página o perfil
+    if "/posts/" in href:
+        return href.split("?")[0].rstrip("/") + "/"
 
     # 5. Reel
     if "/reel/" in href:
@@ -114,7 +152,14 @@ def limpiar_url_fb(href: str) -> str:
         if m:
             return f"https://www.facebook.com/watch/?v={m.group(1)}"
 
-    # 7. permalink.php o story.php con story_fbid
+    # 7. Post o permalink en grupo
+    if "/groups/" in href:
+        if "/posts/" in href or "/permalink/" in href:
+            return href.split("?")[0].rstrip("/") + "/"
+        # El grupo general NO es una publicación: descartar
+        return ""
+
+    # 8. permalink.php o story.php con story_fbid
     if ("permalink.php" in href or "story.php" in href) and "story_fbid=" in href:
         m = re.search(r"story_fbid=([a-zA-Z0-9]+)", href)
         id_m = re.search(r"id=([0-9]+)", href)
@@ -141,6 +186,10 @@ def es_url_publicacion_valida(url: str) -> bool:
     if any(k in u for k in ["/search/", "/home.php", "/login", "/messages", "/hashtag/", "/stories/"]):
         return False
 
+    # Excluir explícitamente compartir grupos completos
+    if "/share/g/" in u:
+        return False
+
     # Twitter / X
     if "x.com" in u or "twitter.com" in u:
         return "/status/" in u
@@ -151,9 +200,13 @@ def es_url_publicacion_valida(url: str) -> bool:
 
     # Facebook
     if "facebook.com" in u or "fb.com" in u:
+        if "/share/p/" in u or "/share/v/" in u or "/share/r/" in u:
+            return True
+        if "/photo/" in u or "/photo.php" in u or "fbid=" in u:
+            return True
         if "/groups/" in u:
             return "/permalink/" in u or "/posts/" in u
-        if any(k in u for k in ["/posts/", "/photo/", "fbid=", "/reel/", "/watch/?v=", "/videos/", "story_fbid=", "permalink.php"]):
+        if any(k in u for k in ["/posts/", "/reel/", "/watch/?v=", "/videos/", "story_fbid=", "permalink.php"]):
             return True
         return False
 
@@ -379,14 +432,38 @@ def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> Lis
                 const links = Array.from(card.querySelectorAll('a[href]'));
                 for (const a of links) {
                     const h = a.href || '';
-                    if (!h || h.includes('/search/') || h.includes('/hashtag/') || h.includes('/home.php') || h.includes('/stories/')) continue;
-                    if (h.includes('/photo/') || h.includes('/posts/') || h.includes('/permalink/') || h.includes('fbid=') || h.includes('/videos/') || h.includes('/reel/') || h.includes('/watch/?v=') || h.includes('story_fbid=')) {
-                        directUrl = h;
-                        break;
+                    if (h.includes('/photo/') || h.includes('fbid=')) { directUrl = h; break; }
+                }
+                if (!directUrl) {
+                    for (const a of links) {
+                        const h = a.href || '';
+                        if (h.includes('/posts/')) { directUrl = h; break; }
                     }
-                    if (h.includes('l.facebook.com/l.php') && h.includes('u=')) {
-                        directUrl = h;
-                        break;
+                }
+                if (!directUrl) {
+                    for (const a of links) {
+                        const h = a.href || '';
+                        if (h.includes('/share/p/') || h.includes('/share/v/') || h.includes('/share/r/')) { directUrl = h; break; }
+                    }
+                }
+                if (!directUrl) {
+                    for (const a of links) {
+                        const h = a.href || '';
+                        if (h.includes('l.facebook.com/l.php') && h.includes('u=')) { directUrl = h; break; }
+                    }
+                }
+                if (!directUrl) {
+                    for (const a of links) {
+                        const h = a.href || '';
+                        if (h.includes('/reel/') || h.includes('/watch/?v=') || h.includes('/videos/') || h.includes('story_fbid=')) { directUrl = h; break; }
+                    }
+                }
+                if (!directUrl) {
+                    for (const a of links) {
+                        const h = a.href || '';
+                        if (!h.includes('/search/') && !h.includes('/hashtag/') && !h.includes('/home.php') && !h.includes('/stories/') && !h.includes('/share/g/')) {
+                            if (h.includes('/permalink/')) { directUrl = h; break; }
+                        }
                     }
                 }
                 if (!directUrl) continue;
@@ -655,16 +732,47 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
                     }
 
                     let directUrl = '';
-                    for (const a of Array.from(card.querySelectorAll('a[href]'))) {
+                    const links = Array.from(card.querySelectorAll('a[href]'));
+                    // 1. Foto con fbid (prioridad máxima por estabilidad de URL)
+                    for (const a of links) {
                         const h = a.href || '';
-                        if (!h || h.includes('/search/') || h.includes('/hashtag/') || h.includes('/home.php') || h.includes('/stories/')) continue;
-                        if (h.includes('/permalink/') || h.includes('/posts/') || h.includes('/photo/') || h.includes('fbid=') || h.includes('/reel/') || h.includes('/videos/') || h.includes('/watch/?v=') || h.includes('story_fbid=')) {
-                            directUrl = h;
-                            break;
+                        if (h.includes('/photo/') || h.includes('fbid=')) { directUrl = h; break; }
+                    }
+                    // 2. Post directo
+                    if (!directUrl) {
+                        for (const a of links) {
+                            const h = a.href || '';
+                            if (h.includes('/posts/')) { directUrl = h; break; }
                         }
-                        if (h.includes('l.facebook.com/l.php') && h.includes('u=')) {
-                            directUrl = h;
-                            break;
+                    }
+                    // 3. Compartir oficial de post / reel / video
+                    if (!directUrl) {
+                        for (const a of links) {
+                            const h = a.href || '';
+                            if (h.includes('/share/p/') || h.includes('/share/v/') || h.includes('/share/r/')) { directUrl = h; break; }
+                        }
+                    }
+                    // 4. Enlace externo compartido
+                    if (!directUrl) {
+                        for (const a of links) {
+                            const h = a.href || '';
+                            if (h.includes('l.facebook.com/l.php') && h.includes('u=')) { directUrl = h; break; }
+                        }
+                    }
+                    // 5. Video o reel
+                    if (!directUrl) {
+                        for (const a of links) {
+                            const h = a.href || '';
+                            if (h.includes('/reel/') || h.includes('/watch/?v=') || h.includes('/videos/') || h.includes('story_fbid=')) { directUrl = h; break; }
+                        }
+                    }
+                    // 6. Permalink interno como fallback
+                    if (!directUrl) {
+                        for (const a of links) {
+                            const h = a.href || '';
+                            if (!h.includes('/search/') && !h.includes('/hashtag/') && !h.includes('/home.php') && !h.includes('/stories/') && !h.includes('/share/g/')) {
+                                if (h.includes('/permalink/')) { directUrl = h; break; }
+                            }
                         }
                     }
                     if (!directUrl) continue;
@@ -697,6 +805,7 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
             }""")
 
             items_grupo = 0
+            candidate_cards_loc = None
             for it in items:
                 txt = it.get("texto", "").strip()
                 autor = it.get("autor") or f"Vecino / Camarada en {g_nombre}"
@@ -704,6 +813,24 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
                     continue
 
                 url_fin = limpiar_url_fb(it.get("directUrl"))
+                # Si la URL es un permalink de grupo (que puede redireccionar al feed general)
+                # o si no se obtuvo URL directa, se obtiene el enlace oficial con Compartir -> Copiar enlace
+                if not url_fin or "/permalink/" in url_fin:
+                    try:
+                        if candidate_cards_loc is None:
+                            candidate_cards_loc = page.locator('div[role="feed"] > div, div[role="article"]').all()
+                        for c_loc in candidate_cards_loc:
+                            c_text = c_loc.inner_text().strip()
+                            if txt[:35] in c_text:
+                                share_copied = copiar_enlace_compartir_facebook(page, c_loc)
+                                if share_copied:
+                                    clean_share = limpiar_url_fb(share_copied)
+                                    if clean_share and es_url_publicacion_valida(clean_share):
+                                        url_fin = clean_share
+                                        break
+                    except Exception:
+                        pass
+
                 if not url_fin or not es_url_publicacion_valida(url_fin):
                     continue
                 partido_det = detectar_partido_en_texto(f"{g_nombre} {autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
@@ -816,12 +943,41 @@ def extraer_posteos_referentes_policiales(page, max_items: int = 5) -> List[Dict
                     }
 
                     let directUrl = '';
-                    for (const a of Array.from(card.querySelectorAll('a[href]'))) {
+                    const links = Array.from(card.querySelectorAll('a[href]'));
+                    for (const a of links) {
                         const h = a.href || '';
-                        if (!h || h.includes('/search/') || h.includes('/hashtag/') || h.includes('/home.php') || h.includes('/stories/')) continue;
-                        if (h.includes('/permalink/') || h.includes('/posts/') || h.includes('/photo/') || h.includes('fbid=') || h.includes('/reel/') || h.includes('/videos/') || h.includes('/watch/?v=') || h.includes('story_fbid=')) {
-                            directUrl = h;
-                            break;
+                        if (h.includes('/photo/') || h.includes('fbid=')) { directUrl = h; break; }
+                    }
+                    if (!directUrl) {
+                        for (const a of links) {
+                            const h = a.href || '';
+                            if (h.includes('/posts/')) { directUrl = h; break; }
+                        }
+                    }
+                    if (!directUrl) {
+                        for (const a of links) {
+                            const h = a.href || '';
+                            if (h.includes('/share/p/') || h.includes('/share/v/') || h.includes('/share/r/')) { directUrl = h; break; }
+                        }
+                    }
+                    if (!directUrl) {
+                        for (const a of links) {
+                            const h = a.href || '';
+                            if (h.includes('l.facebook.com/l.php') && h.includes('u=')) { directUrl = h; break; }
+                        }
+                    }
+                    if (!directUrl) {
+                        for (const a of links) {
+                            const h = a.href || '';
+                            if (h.includes('/reel/') || h.includes('/watch/?v=') || h.includes('/videos/') || h.includes('story_fbid=')) { directUrl = h; break; }
+                        }
+                    }
+                    if (!directUrl) {
+                        for (const a of links) {
+                            const h = a.href || '';
+                            if (!h.includes('/search/') && !h.includes('/hashtag/') && !h.includes('/home.php') && !h.includes('/stories/') && !h.includes('/share/g/')) {
+                                if (h.includes('/permalink/')) { directUrl = h; break; }
+                            }
                         }
                     }
                     if (!directUrl) continue;
@@ -853,12 +1009,30 @@ def extraer_posteos_referentes_policiales(page, max_items: int = 5) -> List[Dict
                 return out;
             }""")
 
+            candidate_cards_loc = None
             for it in items:
                 txt = it.get("texto", "").strip()
                 autor = it.get("autor") or f_item["autor_default"]
                 if not txt or len(txt) < 25 or not es_texto_espanol(txt) or es_exclusion_geografica(txt) or es_texto_basura_ui(autor, txt):
                     continue
+
                 url_fin = limpiar_url_fb(it.get("directUrl"))
+                if not url_fin or "/permalink/" in url_fin:
+                    try:
+                        if candidate_cards_loc is None:
+                            candidate_cards_loc = page.locator('div[role="feed"] > div, div[role="article"]').all()
+                        for c_loc in candidate_cards_loc:
+                            c_text = c_loc.inner_text().strip()
+                            if txt[:35] in c_text:
+                                share_copied = copiar_enlace_compartir_facebook(page, c_loc)
+                                if share_copied:
+                                    clean_share = limpiar_url_fb(share_copied)
+                                    if clean_share and es_url_publicacion_valida(clean_share):
+                                        url_fin = clean_share
+                                        break
+                    except Exception:
+                        pass
+
                 if not url_fin or not es_url_publicacion_valida(url_fin):
                     continue
                 partido_det = detectar_partido_en_texto(f"{autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
@@ -934,16 +1108,41 @@ def extraer_posteos_facebook_amigos(page, max_items: int = 5) -> List[Dict[str, 
                 if (texto.length < 25) continue;
 
                 let directUrl = '';
-                for (const a of Array.from(card.querySelectorAll('a[href]'))) {
+                const links = Array.from(card.querySelectorAll('a[href]'));
+                for (const a of links) {
                     const h = a.href || '';
-                    if (!h || h.includes('/search/') || h.includes('/hashtag/') || h.includes('/home.php') || h.includes('/stories/')) continue;
-                    if (h.includes('/posts/') || h.includes('/permalink/') || h.includes('/photo/') || h.includes('fbid=') || h.includes('/reel/') || h.includes('/videos/') || h.includes('/watch/?v=') || h.includes('story_fbid=')) {
-                        directUrl = h;
-                        break;
+                    if (h.includes('/photo/') || h.includes('fbid=')) { directUrl = h; break; }
+                }
+                if (!directUrl) {
+                    for (const a of links) {
+                        const h = a.href || '';
+                        if (h.includes('/posts/')) { directUrl = h; break; }
                     }
-                    if (h.includes('l.facebook.com/l.php') && h.includes('u=')) {
-                        directUrl = h;
-                        break;
+                }
+                if (!directUrl) {
+                    for (const a of links) {
+                        const h = a.href || '';
+                        if (h.includes('/share/p/') || h.includes('/share/v/') || h.includes('/share/r/')) { directUrl = h; break; }
+                    }
+                }
+                if (!directUrl) {
+                    for (const a of links) {
+                        const h = a.href || '';
+                        if (h.includes('l.facebook.com/l.php') && h.includes('u=')) { directUrl = h; break; }
+                    }
+                }
+                if (!directUrl) {
+                    for (const a of links) {
+                        const h = a.href || '';
+                        if (h.includes('/reel/') || h.includes('/watch/?v=') || h.includes('/videos/') || h.includes('story_fbid=')) { directUrl = h; break; }
+                    }
+                }
+                if (!directUrl) {
+                    for (const a of links) {
+                        const h = a.href || '';
+                        if (!h.includes('/search/') && !h.includes('/hashtag/') && !h.includes('/home.php') && !h.includes('/stories/') && !h.includes('/share/g/')) {
+                            if (h.includes('/permalink/')) { directUrl = h; break; }
+                        }
                     }
                 }
                 if (!directUrl) continue;
@@ -962,6 +1161,7 @@ def extraer_posteos_facebook_amigos(page, max_items: int = 5) -> List[Dict[str, 
             return out;
         }""")
 
+        candidate_cards_loc = None
         for it in items:
             txt = it.get("texto", "").strip()
             autor = it.get("autor") or "Contacto en Facebook"
@@ -969,6 +1169,23 @@ def extraer_posteos_facebook_amigos(page, max_items: int = 5) -> List[Dict[str, 
                 continue
 
             url_fin = limpiar_url_fb(it.get("directUrl"))
+            if not url_fin or "/permalink/" in url_fin:
+                try:
+                    if candidate_cards_loc is None:
+                        feed_el = page.locator('div[role="feed"] > div, div[role="article"]').all()
+                        candidate_cards_loc = feed_el
+                    for c_loc in candidate_cards_loc:
+                        c_text = c_loc.inner_text().strip()
+                        if txt[:35] in c_text:
+                            share_copied = copiar_enlace_compartir_facebook(page, c_loc)
+                            if share_copied:
+                                clean_share = limpiar_url_fb(share_copied)
+                                if clean_share and es_url_publicacion_valida(clean_share):
+                                    url_fin = clean_share
+                                    break
+                except Exception:
+                    pass
+
             if not url_fin or not es_url_publicacion_valida(url_fin):
                 continue
             partido_det = detectar_partido_en_texto(f"{autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
@@ -1295,7 +1512,7 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
                                OR fuente LIKE '%Grupo%' OR fuente LIKE '%Amigos%' OR fuente LIKE '%Virginia%')
                           AND url NOT LIKE '%facebook.com'
                           AND url NOT LIKE '%facebook.com/'
-                          AND (url LIKE '%/posts/%' OR url LIKE '%/permalink/%' OR url LIKE '%/status/%' OR url LIKE '%/p/%' OR url LIKE '%/reel/%' OR url LIKE '%fbid=%' OR url NOT LIKE '%facebook.com%')
+                          AND (url LIKE '%/posts/%' OR url LIKE '%/permalink/%' OR url LIKE '%/status/%' OR url LIKE '%/p/%' OR url LIKE '%/reel/%' OR url LIKE '%fbid=%' OR url LIKE '%/share/%' OR url NOT LIKE '%facebook.com%')
                         ORDER BY (imagen_url IS NOT NULL AND imagen_url != '') DESC, id DESC LIMIT 4
                         """,
                         (edicion_id,),

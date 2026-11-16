@@ -63,6 +63,12 @@ PATRONES_NOMBRES_PROPIOS = [
         ),
     ),
     (
+        "Autoridad / Policial",
+        re.compile(
+            r"(?:[Cc]omisario(?:\s+[Ii]nspector)?|[Ss]ubdirector|[Mm]inistro|[Ii]ntendente|[Ss]ecretario|[Jj]uez|[Ff]iscal|[Gg]obernador|[Cc]úpula)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){1,2})"
+        ),
+    ),
+    (
         "Barrio / Lugar",
         re.compile(
             r"(?:[Bb]arrio|[Vv]illa|[Cc]ountry|[Aa]sentamiento|[Pp]laza|[Cc]omisaría)\s+([A-ZÁÉÍÓÚÑ0-9][a-záéíóúñ0-9]+(?:\s+[A-ZÁÉÍÓÚÑ0-9][a-záéíóúñ0-9]+){0,2})"
@@ -72,12 +78,6 @@ PATRONES_NOMBRES_PROPIOS = [
         "Empresa / Institución",
         re.compile(
             r"(?:[Ff]ábrica|[Ee]mpresa|[Pp]apelera|[Ff]rigorífico|[Cc]ooperativa|[Ee]scuela|[Jj]ardín|[Cc]olegio|[Hh]ospital|[Cc]línica|[Tt]extil|[Mm]etalúrgica)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+(?:del|de\s+la|de|los|las|[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)){0,3})"
-        ),
-    ),
-    (
-        "Entidad entrecomillada",
-        re.compile(
-            r'["“«]([A-ZÁÉÍÓÚÑ][A-Za-záéíóúñÁÉÍÓÚÑ0-9\s]{3,35})["”»]'
         ),
     ),
 ]
@@ -146,7 +146,8 @@ def extraer_nombres_propios(texto: str) -> List[Tuple[str, str]]:
     descartar = {
         "Buenos Aires", "Provincia De", "Capital Federal", "Facebook", "Twitter", "Instagram",
         "Policía Bonaerense", "Conurbano Bonaerense", "Gran Buenos",
-        "Todos Los", "Muchas Gracias", "Por Favor"
+        "Todos Los", "Muchas Gracias", "Por Favor", "Giphy", "Tenor", "Sticker", "Emoji",
+        "En Tu Casa", "Tenía La Heladera Vacía", "No Alcanza Ni Para Los Remedios"
     }
     partidos_set = {p.lower() for p in PARTIDOS_PBA}
     hallados: List[Tuple[str, str]] = []
@@ -154,10 +155,10 @@ def extraer_nombres_propios(texto: str) -> List[Tuple[str, str]]:
 
     for tipo, regex in PATRONES_NOMBRES_PROPIOS:
         for match in regex.finditer(texto):
-            candidato = match.group(1).strip(" .,;:!¡?¿-—")
+            candidato = match.group(1).strip(" .,;:!¡?¿-—\n\r\t\"'«»“”")
             if len(candidato) < 4 or len(candidato) > 40:
                 continue
-            if candidato in descartar or candidato.lower() in partidos_set:
+            if candidato in descartar or candidato.title() in descartar or candidato.lower() in {d.lower() for d in descartar} or candidato.lower() in partidos_set:
                 continue
             if candidato.lower() not in vistos:
                 vistos.add(candidato.lower())

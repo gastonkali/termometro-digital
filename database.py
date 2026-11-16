@@ -278,8 +278,10 @@ def registrar_nombre_propio(
     edicion_id: int,
     fuente_url: str = "",
 ) -> None:
-    nombre_limpio = nombre.strip()
+    nombre_limpio = nombre.strip(" .,;:!¡?¿-—\n\r\t\"'«»“”")
     if len(nombre_limpio) < 3:
+        return
+    if any(b in nombre_limpio.lower() for b in ["giphy", "tenor", "sticker", "emoji", "en tu casa", "estas pensando", "heladera vacía", "remedios"]):
         return
     conn = get_conn()
     cur = conn.cursor()

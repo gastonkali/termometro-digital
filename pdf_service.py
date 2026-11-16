@@ -290,7 +290,7 @@ def generar_html_reporte(
                OR fuente LIKE '%Virginia%')
               AND url NOT LIKE '%facebook.com'
               AND url NOT LIKE '%facebook.com/'
-              AND (url LIKE '%/posts/%' OR url LIKE '%/permalink/%' OR url LIKE '%/status/%' OR url LIKE '%/p/%' OR url LIKE '%/reel/%' OR url LIKE '%fbid=%' OR url NOT LIKE '%facebook.com%')
+              AND (url LIKE '%/posts/%' OR url LIKE '%/permalink/%' OR url LIKE '%/status/%' OR url LIKE '%/p/%' OR url LIKE '%/reel/%' OR url LIKE '%fbid=%' OR url LIKE '%/share/%' OR url NOT LIKE '%facebook.com%')
             ORDER BY id DESC LIMIT 15
             """
         ).fetchall()
