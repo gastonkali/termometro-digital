@@ -1238,11 +1238,11 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
                     ).fetchall()
                     grupos_dest = conn.execute(
                         """
-                        SELECT id, fuente, autor, partido, titulo, texto, url FROM hallazgos
+                        SELECT id, fuente, autor, partido, titulo, texto, url, imagen_url FROM hallazgos
                         WHERE (edicion_id = ? OR id > (SELECT COALESCE(MAX(id)-20, 0) FROM hallazgos))
                           AND (pasada IN ('grupos_vecinales', 'feed_amigos', 'referentes_policiales', 'instagram_amigos')
                                OR fuente LIKE '%Grupo%' OR fuente LIKE '%Amigos%' OR fuente LIKE '%Virginia%')
-                        ORDER BY id DESC LIMIT 4
+                        ORDER BY (imagen_url IS NOT NULL AND imagen_url != '') DESC, id DESC LIMIT 4
                         """,
                         (edicion_id,),
                     ).fetchall()

@@ -292,6 +292,15 @@ def generar_html_reporte(
                 if len(items_red_propia) >= 4:
                     break
 
+    # Priorizar publicaciones que contengan imagen real para que el relevamiento sea visual
+    items_red_propia.sort(
+        key=lambda x: (
+            1 if x.get("imagen_url") and str(x.get("imagen_url")).startswith("http") else 0,
+            x.get("id", 0)
+        ),
+        reverse=True
+    )
+
     filas_red_propia = ""
     for item in items_red_propia[:3]:
         f_nom = item.get("fuente", "Facebook")
@@ -313,6 +322,24 @@ def generar_html_reporte(
         txt_raw = item.get("texto") or item.get("titulo") or ""
         txt_limpio = html_lib.escape(recortar_texto_limpio(txt_raw.split("\n\n💬")[0], 110))
         
+        img_url = (item.get("imagen_url") or "").strip()
+        url_directa = item.get("url") or "#"
+
+        if img_url and img_url.startswith("http"):
+            thumb_item = (
+                f'<a href="{url_directa}" target="_blank" style="text-decoration:none; display:inline-block;">'
+                f'<img src="{html_lib.escape(img_url)}" alt="Foto" '
+                f'style="width: 44px; height: 44px; object-fit: cover; border-radius: 4px; border: 1px solid #cbd5e1; display: block;" />'
+                f'</a>'
+            )
+        else:
+            icono = "👮" if any(k in comunidad_lbl.lower() for k in ["polic", "rumores", "sosa", "permutas"]) else "📢"
+            thumb_item = (
+                f'<div style="width: 44px; height: 44px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 13pt; color: #64748b; margin: 0 auto;">'
+                f'{icono}'
+                f'</div>'
+            )
+
         comms_raw = item.get("comentarios") or item.get("comentarios_json") or []
         if isinstance(comms_raw, str):
             try:
@@ -333,8 +360,6 @@ def generar_html_reporte(
         else:
             reaccion_txt = "<span style='color:#94a3b8; font-style:italic;'>Sin comentarios adicionales</span>"
 
-        url_directa = item.get("url") or "#"
-
         filas_red_propia += f"""
         <tr>
           <td>
@@ -342,7 +367,8 @@ def generar_html_reporte(
             <span style="font-size: 6.8pt; color: #475569;">Por: {autor}</span>
           </td>
           <td><strong>{partido}</strong></td>
-          <td>{txt_limpio}</td>
+          <td style="text-align: center; vertical-align: middle;">{thumb_item}</td>
+          <td style="font-size: 7.9pt; line-height: 1.25;">{txt_limpio}</td>
           <td>{reaccion_txt}</td>
           <td style="text-align: center;"><a class="link-inline" href="{url_directa}">ver ↗</a></td>
         </tr>
@@ -351,7 +377,7 @@ def generar_html_reporte(
     if not filas_red_propia:
         filas_red_propia = """
         <tr>
-          <td colspan="5" style="text-align: center; color: #64748b; font-style: italic; padding: 8px;">
+          <td colspan="6" style="text-align: center; color: #64748b; font-style: italic; padding: 8px;">
             Sin publicaciones recientes detectadas en grupos o contactos durante este corte.
           </td>
         </tr>
@@ -703,9 +729,10 @@ def generar_html_reporte(
     <table class="data-table">
       <thead>
         <tr>
-          <th style="width: 23%;">Comunidad / Contacto</th>
-          <th style="width: 14%;">Partido</th>
-          <th style="width: 33%;">Publicación y reclamo</th>
+          <th style="width: 20%;">Comunidad / Contacto</th>
+          <th style="width: 13%;">Partido</th>
+          <th style="width: 10%; text-align: center;">Imagen</th>
+          <th style="width: 27%;">Publicación y reclamo</th>
           <th style="width: 22%;">Comentarios de miembros</th>
           <th style="width: 8%; text-align: center;">Link</th>
         </tr>

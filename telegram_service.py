@@ -125,7 +125,32 @@ def enviar_alerta_telegram(
     except Exception as e:
         resultado["error_texto"] = str(e)
 
-    # 2. Enviar Documento PDF adjunto directamente al celular
+    # 2. Enviar Foto de la publicación si está disponible
+    foto_url = datos_edicion.get("foto_destacada")
+    if not foto_url and datos_edicion.get("relevamiento_grupos"):
+        for g in datos_edicion["relevamiento_grupos"]:
+            if g.get("imagen_url") and str(g["imagen_url"]).startswith("http"):
+                foto_url = g["imagen_url"]
+                break
+    if foto_url:
+        try:
+            r_img = requests.get(foto_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+            if r_img.status_code == 200 and len(r_img.content) > 1000:
+                url_photo = f"https://api.telegram.org/bot{token}/sendPhoto"
+                requests.post(
+                    url_photo,
+                    data={
+                        "chat_id": cid,
+                        "caption": f"📸 Imagen de publicación relevada — Edición #{datos_edicion.get('edicion_id', 1)}"
+                    },
+                    files={"photo": ("publicacion.jpg", r_img.content, "image/jpeg")},
+                    timeout=15
+                )
+                resultado["foto_enviada"] = True
+        except Exception:
+            pass
+
+    # 3. Enviar Documento PDF adjunto directamente al celular
     if ruta_pdf and os.path.exists(ruta_pdf):
         try:
             url_doc = f"https://api.telegram.org/bot{token}/sendDocument"
