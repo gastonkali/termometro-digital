@@ -9,6 +9,7 @@ import re
 from typing import Any, Dict, Optional
 import requests
 from dotenv import load_dotenv
+from config_pba import es_url_publicacion_valida
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
@@ -52,7 +53,7 @@ def formatear_mensaje_telegram(datos_edicion: Dict[str, Any]) -> str:
             autor = g.get("autor", "Miembro")
             txt_corto = recortar_telegram(g.get("texto") or g.get("titulo") or "", 95)
             url = g.get("url") or ""
-            link_str = f" [ver ↗]({url})" if url and url.startswith("http") else ""
+            link_str = f" [ver ↗]({url})" if (url and es_url_publicacion_valida(url)) else ""
             msg.append(f"• *[{f_nom} · {p}]* {autor}: _{txt_corto}_{link_str}")
         msg.append("")
 

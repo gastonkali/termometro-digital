@@ -29,6 +29,8 @@ from config_pba import (
     PARTIDOS_PBA,
     STOPWORDS_ES,
     es_exclusion_geografica,
+    es_texto_basura_ui,
+    es_url_publicacion_valida,
     generar_variantes_termino,
     quitar_tildes,
 )
@@ -227,6 +229,9 @@ def clasificar_hallazgo(
     pasada: str = "anclaje_general",
 ) -> Optional[Dict[str, Any]]:
     combinado = f"{titulo} {texto}".strip()
+
+    if es_texto_basura_ui(titulo, texto):
+        return None
 
     if es_exclusion_geografica(combinado, partido_objetivo):
         return None
@@ -724,11 +729,13 @@ def ingerir_posteos_directos_facebook(
         if not info:
             continue
 
+        url = (p.get("url") or "").strip()
+        if not url or not es_url_publicacion_valida(url):
+            # No ingerir publicaciones sin URL verificada directa a la publicación
+            continue
+
         total_procesados += 1
         partidos.add(info["partido"])
-        url = p.get("url") or construir_url_facebook_search(
-            f"{info['termino_detectado']} {info['partido']}"
-        )
 
         es_nuevo = insertar_hallazgo(
             {

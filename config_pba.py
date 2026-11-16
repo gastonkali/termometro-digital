@@ -545,3 +545,74 @@ def resolver_eje_tematico_preciso(texto: str, categoria_sugerida: str = "") -> s
         return "imagen_institucional"
 
     return categoria_sugerida or "seguridad"
+
+
+def es_url_publicacion_valida(url: str) -> bool:
+    """
+    Verifica que la URL lleve de manera inequívoca a una publicación, tweet, post
+    o noticia directa, y NO a una página principal, feed, grupo, búsqueda o perfil.
+    """
+    if not url or not isinstance(url, str) or not url.startswith("http"):
+        return False
+    u = url.lower().strip()
+
+    # Exclusiones de navegación o cuentas
+    if u in [
+        "https://www.facebook.com", "https://www.facebook.com/",
+        "https://facebook.com", "https://facebook.com/",
+        "https://www.instagram.com", "https://www.instagram.com/",
+        "https://instagram.com", "https://instagram.com/",
+        "https://x.com", "https://x.com/",
+        "https://twitter.com", "https://twitter.com/"
+    ]:
+        return False
+
+    if any(k in u for k in ["/search/", "/home.php", "/login", "/messages", "/notifications", "/hashtag/", "/stories/"]):
+        return False
+
+    # Twitter / X: debe ser un tweet específico
+    if "x.com" in u or "twitter.com" in u:
+        return "/status/" in u
+
+    # Instagram: debe ser post o reel
+    if "instagram.com" in u:
+        return "/p/" in u or "/reel/" in u
+
+    # Facebook: debe ser permalink de post, foto, reel o video
+    if "facebook.com" in u or "fb.com" in u:
+        if "/groups/" in u:
+            return "/permalink/" in u or "/posts/" in u
+        if any(k in u for k in ["/posts/", "/photo/", "fbid=", "/reel/", "/watch/?v=", "/videos/", "story_fbid=", "permalink.php"]):
+            return True
+        return False
+
+    # Noticias o portales web externos (válidos)
+    return True
+
+
+def es_texto_basura_ui(autor: str, texto: str) -> bool:
+    """
+    Detecta si el texto o autor corresponde a elementos de la interfaz de usuario de Facebook
+    (cajas de publicación, indicadores de chat en línea, carruseles de historias, etc.)
+    en lugar de una publicación real de conflicto vecinal.
+    """
+    a = (autor or "").lower().strip()
+    t = (texto or "").lower().strip()
+
+    patrones = [
+        "¿qué estás pensando", "que estas pensando", "estás pensando, gaston", "estas pensando",
+        "crear una publicación", "crear publicacion", "indicador de estado", "estado online",
+        "publicaciones del feed", "reels y videos cortos", "ordenar feed", "escribe un comentario",
+        "detalles del grupo", "añadir a tu publicación", "compartir en tu perfil",
+        "cambió su foto de portada", "actualizó su foto del perfil", "activo hace",
+        "enviar mensaje", "precio:", "alquilo dpto", "vendo ropero"
+    ]
+    if any(p in a for p in patrones):
+        return True
+    if any(p in t for p in patrones):
+        return True
+    if a in ["activo", "facebook", "desconocido", "usuario", "participante"]:
+        if len(t) < 30 or any(p in t for p in patrones):
+            return True
+    return False
+

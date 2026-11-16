@@ -30,7 +30,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from database import get_conn
 from clustering_service import agrupar_en_clusters
-from config_pba import es_ruido_o_no_conflictividad, es_exclusion_geografica, resolver_partido_geografico_preciso, resolver_eje_tematico_preciso
+from config_pba import (
+    es_ruido_o_no_conflictividad,
+    es_exclusion_geografica,
+    es_texto_basura_ui,
+    es_url_publicacion_valida,
+    resolver_partido_geografico_preciso,
+    resolver_eje_tematico_preciso
+)
 
 BASE_DIR = os.path.dirname(__file__)
 PDF_OUTPUT_DIR = os.path.join(BASE_DIR, "reportes_pdf")
@@ -267,8 +274,9 @@ def generar_html_reporte(
             or "rumores" in f_val
         ):
             if r["id"] not in ids_vistos:
-                ids_vistos.add(r["id"])
-                items_red_propia.append(r)
+                if es_url_publicacion_valida(r.get("url")) and not es_texto_basura_ui(r.get("autor", ""), r.get("texto", "")):
+                    ids_vistos.add(r["id"])
+                    items_red_propia.append(r)
 
     # Si hay pocos en la edición actual, complementar con los últimos registrados en la base
     if len(items_red_propia) < 3:
@@ -276,21 +284,25 @@ def generar_html_reporte(
         recientes_grupos = conn.execute(
             """
             SELECT * FROM hallazgos
-            WHERE pasada IN ('grupos_vecinales', 'feed_amigos', 'referentes_policiales', 'instagram_amigos')
+            WHERE (pasada IN ('grupos_vecinales', 'feed_amigos', 'referentes_policiales', 'instagram_amigos')
                OR fuente LIKE '%Grupo%'
                OR fuente LIKE '%Amigos%'
-               OR fuente LIKE '%Virginia%'
-            ORDER BY id DESC LIMIT 6
+               OR fuente LIKE '%Virginia%')
+              AND url NOT LIKE '%facebook.com'
+              AND url NOT LIKE '%facebook.com/'
+              AND (url LIKE '%/posts/%' OR url LIKE '%/permalink/%' OR url LIKE '%/status/%' OR url LIKE '%/p/%' OR url LIKE '%/reel/%' OR url LIKE '%fbid=%' OR url NOT LIKE '%facebook.com%')
+            ORDER BY id DESC LIMIT 15
             """
         ).fetchall()
         conn.close()
         for rg in recientes_grupos:
             rg_d = dict(rg)
             if rg_d["id"] not in ids_vistos:
-                ids_vistos.add(rg_d["id"])
-                items_red_propia.append(rg_d)
-                if len(items_red_propia) >= 4:
-                    break
+                if es_url_publicacion_valida(rg_d.get("url")) and not es_texto_basura_ui(rg_d.get("autor", ""), rg_d.get("texto", "")):
+                    ids_vistos.add(rg_d["id"])
+                    items_red_propia.append(rg_d)
+                    if len(items_red_propia) >= 4:
+                        break
 
     # Priorizar publicaciones que contengan imagen real para que el relevamiento sea visual
     items_red_propia.sort(
@@ -323,15 +335,22 @@ def generar_html_reporte(
         txt_limpio = html_lib.escape(recortar_texto_limpio(txt_raw.split("\n\n💬")[0], 110))
         
         img_url = (item.get("imagen_url") or "").strip()
-        url_directa = item.get("url") or "#"
+        url_directa = (item.get("url") or "").strip()
+        link_valido = es_url_publicacion_valida(url_directa)
 
         if img_url and img_url.startswith("http"):
-            thumb_item = (
-                f'<a href="{url_directa}" target="_blank" style="text-decoration:none; display:inline-block;">'
-                f'<img src="{html_lib.escape(img_url)}" alt="Foto" '
-                f'style="width: 44px; height: 44px; object-fit: cover; border-radius: 4px; border: 1px solid #cbd5e1; display: block;" />'
-                f'</a>'
-            )
+            if link_valido:
+                thumb_item = (
+                    f'<a href="{url_directa}" target="_blank" style="text-decoration:none; display:inline-block;">'
+                    f'<img src="{html_lib.escape(img_url)}" alt="Foto" '
+                    f'style="width: 44px; height: 44px; object-fit: cover; border-radius: 4px; border: 1px solid #cbd5e1; display: block;" />'
+                    f'</a>'
+                )
+            else:
+                thumb_item = (
+                    f'<img src="{html_lib.escape(img_url)}" alt="Foto" '
+                    f'style="width: 44px; height: 44px; object-fit: cover; border-radius: 4px; border: 1px solid #cbd5e1; display: block; margin: 0 auto;" />'
+                )
         else:
             icono = "👮" if any(k in comunidad_lbl.lower() for k in ["polic", "rumores", "sosa", "permutas"]) else "📢"
             thumb_item = (
@@ -360,6 +379,8 @@ def generar_html_reporte(
         else:
             reaccion_txt = "<span style='color:#94a3b8; font-style:italic;'>Sin comentarios adicionales</span>"
 
+        link_td = f'<a class="link-inline" href="{url_directa}" target="_blank">ver ↗</a>' if link_valido else '<span style="color:#94a3b8;">—</span>'
+
         filas_red_propia += f"""
         <tr>
           <td>
@@ -370,7 +391,7 @@ def generar_html_reporte(
           <td style="text-align: center; vertical-align: middle;">{thumb_item}</td>
           <td style="font-size: 7.9pt; line-height: 1.25;">{txt_limpio}</td>
           <td>{reaccion_txt}</td>
-          <td style="text-align: center;"><a class="link-inline" href="{url_directa}">ver ↗</a></td>
+          <td style="text-align: center;">{link_td}</td>
         </tr>
         """
 
@@ -776,7 +797,11 @@ def generar_html_reporte(
             )
             eje_str = EJE_LABELS.get(c["categoria"], c["categoria"])
             primera_fuente = c.get("fuentes_nombres", ["Fuente"])[0] if c.get("fuentes_nombres") else "Redes"
-            primera_url = c["urls"][0] if c["urls"] else "#"
+            primera_url = c["urls"][0] if c.get("urls") else ""
+            if primera_url and es_url_publicacion_valida(primera_url):
+                fuente_td = f'{primera_fuente} · <a class="link-inline" href="{primera_url}" target="_blank">ver ↗</a>'
+            else:
+                fuente_td = f'{primera_fuente}'
 
             html += f"""
         <tr>
@@ -787,7 +812,7 @@ def generar_html_reporte(
             <div class="sub-eje">Eje: {eje_str}</div>
           </td>
           <td>{c['reaccion_vecinal']}</td>
-          <td>{primera_fuente} · <a class="link-inline" href="{primera_url}">ver ↗</a></td>
+          <td>{fuente_td}</td>
         </tr>
             """
 
@@ -990,13 +1015,17 @@ def generar_html_reporte(
 """
 
     filas_anexo_figuras = 0
-    import urllib.parse
 
-    for nr in nombres_rows[:4]:
+    for nr in nombres_rows:
+        if filas_anexo_figuras >= 4:
+            break
         n_nombre = nr["nombre"]
+        n_ctx = limpiar_contexto_nombre(nr.get("contexto", ""), 100)
+        if es_texto_basura_ui(n_nombre, n_ctx):
+            continue
+
         n_tipo = nr.get("tipo", "Figura / Persona")
         n_partido = nr.get("partido", "Provincia de Buenos Aires")
-        n_ctx = limpiar_contexto_nombre(nr.get("contexto", ""), 100)
         n_apariciones = nr.get("apariciones", 1)
         menciones_str = f"{n_apariciones} mención" if n_apariciones == 1 else f"{n_apariciones} menciones"
         estado_badge = (
@@ -1005,25 +1034,28 @@ def generar_html_reporte(
             else '<span class="estado-col estado-descartado">Descartado</span>'
         )
         n_url = (nr.get("fuente_url") or "").strip()
-        if not n_url or n_url == "#":
-            q = f"{n_nombre} {n_partido}".strip()
-            n_url = f"https://www.facebook.com/search/posts?q={urllib.parse.quote_plus(q)}"
+        link_col = f'<a class="link-inline" href="{n_url}" target="_blank">ver ↗</a>' if es_url_publicacion_valida(n_url) else '<span style="color:#94a3b8;">—</span>'
 
         html += f"""
         <tr>
           <td><strong>“{html_lib.escape(n_nombre)}”</strong><br/><span style="font-size: 6.8pt; color: #64748b;">({html_lib.escape(n_tipo)})</span></td>
           <td><strong>{html_lib.escape(n_partido)}:</strong> {html_lib.escape(n_ctx)} ({menciones_str})</td>
           <td class="estado-col">{estado_badge}</td>
-          <td style="text-align: center;"><a class="link-inline" href="{n_url}">ver ↗</a></td>
+          <td style="text-align: center;">{link_col}</td>
         </tr>
         """
         filas_anexo_figuras += 1
 
-    for pr in propuestas_rows[:4]:
+    for pr in propuestas_rows:
+        if filas_anexo_figuras >= 7:
+            break
         p_palabra = pr["palabra"]
+        p_ej = limpiar_contexto_nombre(pr.get("ejemplo_texto", ""), 95)
+        if es_texto_basura_ui(p_palabra, p_ej):
+            continue
+
         p_cat = pr.get("categoria_sugerida", "general")
         p_partido = pr.get("partido_origen", "PBA")
-        p_ej = limpiar_contexto_nombre(pr.get("ejemplo_texto", ""), 95)
         p_estado = pr.get("estado", "observando")
         estado_badge = (
             '<span class="estado-col estado-pendiente">En observación</span>'
@@ -1031,18 +1063,17 @@ def generar_html_reporte(
             else f'<span class="estado-col estado-descartado">{html_lib.escape(p_estado)}</span>'
         )
         p_url = (pr.get("fuente_url") or "").strip()
-        if not p_url or p_url == "#":
-            q = f"{p_palabra} {p_partido}".strip()
-            p_url = f"https://www.facebook.com/search/posts?q={urllib.parse.quote_plus(q)}"
+        link_col = f'<a class="link-inline" href="{p_url}" target="_blank">ver ↗</a>' if es_url_publicacion_valida(p_url) else '<span style="color:#94a3b8;">—</span>'
 
         html += f"""
         <tr>
           <td><strong>{html_lib.escape(p_palabra)}</strong><br/><span style="font-size: 6.8pt; color: #64748b;">Eje: {html_lib.escape(p_cat)}</span></td>
           <td><strong>{html_lib.escape(p_partido)}:</strong> {html_lib.escape(p_ej)}</td>
           <td class="estado-col">{estado_badge}</td>
-          <td style="text-align: center;"><a class="link-inline" href="{p_url}">ver ↗</a></td>
+          <td style="text-align: center;">{link_col}</td>
         </tr>
         """
+        filas_anexo_figuras += 1
         filas_anexo_figuras += 1
 
     if filas_anexo_figuras == 0:

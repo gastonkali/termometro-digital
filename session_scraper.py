@@ -59,48 +59,132 @@ import urllib.parse
 
 def limpiar_url_fb(href: str) -> str:
     """
-    Limpia y normaliza URLs de Facebook para que lleven directamente
-    al posteo, foto, video, reel o perfil sin parámetros residuales de rastreo.
+    Limpia y normaliza URLs de Facebook para que lleven DIRECTAMENTE
+    al posteo, foto, video, reel o artículo externo compartido.
+    Rechaza terminantemente perfiles, páginas, grupos generales, búsquedas o home.
     """
-    if not href or "/search/" in href:
+    if not href:
         return ""
-    # Si tiene fbid de foto
-    if "/photo/" in href and "fbid=" in href:
+    href = href.strip()
+
+    # 1. Enlace externo compartido a través del redireccionador l.facebook.com
+    if "l.facebook.com/l.php" in href and "u=" in href:
+        m = re.search(r"u=([^&]+)", href)
+        if m:
+            ext_url = urllib.parse.unquote(m.group(1))
+            if ext_url.startswith("http") and not any(d in ext_url for d in ["facebook.com", "fb.com"]):
+                return ext_url.split("?fbclid")[0].split("&fbclid")[0]
+
+    # Exclusiones terminantes de Facebook que no son publicaciones
+    if any(k in href for k in ["/search/", "/home.php", "/login", "/messages", "/notifications", "/hashtag/", "/stories/"]):
+        return ""
+    if href in ["https://www.facebook.com", "https://www.facebook.com/", "https://facebook.com", "https://facebook.com/"]:
+        return ""
+
+    # 2. Post o permalink en grupo
+    if "/groups/" in href:
+        if "/permalink/" in href or "/posts/" in href:
+            return href.split("?")[0].rstrip("/") + "/"
+        # El grupo general NO es una publicación: descartar
+        return ""
+
+    # 3. Post directo de página o perfil
+    if "/posts/" in href:
+        return href.split("?")[0].rstrip("/")
+
+    # 4. Foto con fbid
+    if ("/photo/" in href or "/photo.php" in href) and "fbid=" in href:
         m = re.search(r"fbid=([0-9]+)", href)
         if m:
             return f"https://www.facebook.com/photo/?fbid={m.group(1)}"
-    # Si es reel
+
+    # 5. Reel
     if "/reel/" in href:
         m = re.search(r"/reel/([0-9]+)", href)
         if m:
             return f"https://www.facebook.com/reel/{m.group(1)}/"
-    # Si es permalink de post o grupo
-    if "/posts/" in href or "/permalink/" in href:
-        return href.split("?")[0]
-    # Si es permalink.php con story_fbid
-    if "permalink.php" in href and "story_fbid=" in href:
-        m = re.search(r"story_fbid=([0-9]+)", href)
+
+    # 6. Videos / Watch
+    if "/watch/" in href and "v=" in href:
+        m = re.search(r"v=([0-9]+)", href)
+        if m:
+            return f"https://www.facebook.com/watch/?v={m.group(1)}"
+    if "/videos/" in href:
+        m = re.search(r"/videos/([0-9]+)", href)
+        if m:
+            return f"https://www.facebook.com/watch/?v={m.group(1)}"
+
+    # 7. permalink.php o story.php con story_fbid
+    if ("permalink.php" in href or "story.php" in href) and "story_fbid=" in href:
+        m = re.search(r"story_fbid=([a-zA-Z0-9]+)", href)
         id_m = re.search(r"id=([0-9]+)", href)
         if m and id_m:
             return f"https://www.facebook.com/permalink.php?story_fbid={m.group(1)}&id={id_m.group(1)}"
         elif m:
             return f"https://www.facebook.com/permalink.php?story_fbid={m.group(1)}"
-    # Si es perfil por id
-    if "profile.php" in href and "id=" in href:
-        m = re.search(r"id=([0-9]+)", href)
-        if m:
-            return f"https://www.facebook.com/profile.php?id={m.group(1)}"
-    # Si es grupo directo
-    if "/groups/" in href:
-        m = re.search(r"(https://www\.facebook\.com/groups/[^/?]+)", href)
-        if m:
-            return f"{m.group(1)}/"
-    # Si es perfil de página o usuario
-    if href.startswith("https://www.facebook.com/"):
-        slug = href.replace("https://www.facebook.com/", "").split("?")[0].strip("/")
-        if slug and slug not in ["search", "home.php", "login", "watch", "messages", "groups", "photo", "reel"]:
-            return f"https://www.facebook.com/{slug}"
-    return href.split("?")[0] if href else ""
+
+    # Si es perfil de usuario o página sin permalink de post, DESCARTAR
+    return ""
+
+
+def es_url_publicacion_valida(url: str) -> bool:
+    """
+    Verifica que la URL lleve de manera inequívoca a una publicación, tweet, post
+    o noticia directa, y NO a una página principal, feed, grupo o perfil.
+    """
+    if not url or not url.startswith("http"):
+        return False
+    u = url.lower().strip()
+
+    if u in ["https://www.facebook.com", "https://www.facebook.com/", "https://facebook.com", "https://facebook.com/", "https://www.instagram.com/", "https://instagram.com/"]:
+        return False
+    if any(k in u for k in ["/search/", "/home.php", "/login", "/messages", "/hashtag/", "/stories/"]):
+        return False
+
+    # Twitter / X
+    if "x.com" in u or "twitter.com" in u:
+        return "/status/" in u
+
+    # Instagram
+    if "instagram.com" in u:
+        return "/p/" in u or "/reel/" in u
+
+    # Facebook
+    if "facebook.com" in u or "fb.com" in u:
+        if "/groups/" in u:
+            return "/permalink/" in u or "/posts/" in u
+        if any(k in u for k in ["/posts/", "/photo/", "fbid=", "/reel/", "/watch/?v=", "/videos/", "story_fbid=", "permalink.php"]):
+            return True
+        return False
+
+    # Noticias o artículos periodísticos externos (válidos)
+    return True
+
+
+def es_texto_basura_ui(autor: str, texto: str) -> bool:
+    """
+    Detecta si el texto o autor corresponde a elementos de la interfaz de usuario de Facebook
+    (cajas de publicación, indicadores de chat en línea, carruseles de historias, etc.)
+    """
+    a = (autor or "").lower().strip()
+    t = (texto or "").lower().strip()
+
+    patrones = [
+        "¿qué estás pensando", "que estas pensando", "estás pensando, gaston", "estas pensando",
+        "crear una publicación", "crear publicacion", "indicador de estado", "estado online",
+        "publicaciones del feed", "reels y videos cortos", "ordenar feed", "escribe un comentario",
+        "detalles del grupo", "añadir a tu publicación", "compartir en tu perfil",
+        "cambió su foto de portada", "actualizó su foto del perfil", "activo hace",
+        "enviar mensaje", "precio:", "alquilo dpto", "vendo ropero"
+    ]
+    if any(p in a for p in patrones):
+        return True
+    if any(p in t for p in patrones):
+        return True
+    if a in ["activo", "facebook", "desconocido", "usuario", "participante"]:
+        if len(t) < 30 or any(p in t for p in patrones):
+            return True
+    return False
 
 
 def extraer_comentarios_twitter(context, tweet_url: str, max_replies: int = 3) -> Tuple[List[str], str]:
@@ -295,21 +379,17 @@ def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> Lis
                 const links = Array.from(card.querySelectorAll('a[href]'));
                 for (const a of links) {
                     const h = a.href || '';
-                    if (!h || h.includes('/search/')) continue;
-                    if (h.includes('/photo/') || h.includes('/posts/') || h.includes('/permalink/') || h.includes('fbid=') || h.includes('/videos/')) {
+                    if (!h || h.includes('/search/') || h.includes('/hashtag/') || h.includes('/home.php') || h.includes('/stories/')) continue;
+                    if (h.includes('/photo/') || h.includes('/posts/') || h.includes('/permalink/') || h.includes('fbid=') || h.includes('/videos/') || h.includes('/reel/') || h.includes('/watch/?v=') || h.includes('story_fbid=')) {
+                        directUrl = h;
+                        break;
+                    }
+                    if (h.includes('l.facebook.com/l.php') && h.includes('u=')) {
                         directUrl = h;
                         break;
                     }
                 }
-                if (!directUrl) {
-                    for (const a of links) {
-                        const h = a.href || '';
-                        if (h && !h.includes('/search/') && !h.includes('/hashtag/') && !h.includes('/login') && !h.includes('/home.php')) {
-                            directUrl = h;
-                            break;
-                        }
-                    }
-                }
+                if (!directUrl) continue;
 
                 results.push({
                     autor: autor,
@@ -317,67 +397,6 @@ def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> Lis
                     url: directUrl,
                     imgUrl: imgUrl
                 });
-            }
-
-            // 2. Fallback con divs de texto si el feed arrojó pocos
-            if (results.length < 3) {
-                const textElements = main.querySelectorAll('div[dir="auto"]');
-                for (const el of textElements) {
-                    const text = (el.innerText || '').trim();
-                    if (text.length < 40 || seen.has(text)) continue;
-                    if (text.includes('Resultados de') || text.includes('Filtros') || text.includes('Facebook')) continue;
-                    if (text.startsWith('Amigos') || text.startsWith('Grupos')) continue;
-                    seen.add(text);
-
-                    let directUrl = '';
-                    let autor = "Vecinos en Facebook";
-                    let imgUrl = '';
-
-                    let cur = el;
-                    for (let i = 0; i < 8 && cur; i++) {
-                        const links = Array.from(cur.querySelectorAll('a[href]'));
-                        for (const a of links) {
-                            const h = a.href;
-                            if (!h || h.includes('/search/')) continue;
-                            if (h.includes('/photo/') || h.includes('/posts/') || h.includes('/permalink/') || h.includes('/stories/') || h.includes('fbid=')) {
-                                if (!directUrl) directUrl = h;
-                            }
-                            if (h.includes('/groups/') && !directUrl) {
-                                directUrl = h;
-                            }
-                            const authorText = (a.innerText || '').trim();
-                            if (authorText && authorText.length < 50 && !authorText.includes('Facebook') && !authorText.includes('foto') && !authorText.startsWith('Puede ser') && !authorText.includes('Indicador') && !authorText.includes('Activo') && !authorText.includes('+')) {
-                                if (autor === "Vecinos en Facebook") autor = authorText;
-                                if (!directUrl && !h.includes('/search/')) directUrl = h;
-                            }
-                        }
-
-                        if (!imgUrl) {
-                            const imgs = Array.from(cur.querySelectorAll('img'));
-                            for (const im of imgs) {
-                                const s = im.src || '';
-                                if (!s || s.includes('emoji') || s.includes('rsrc') || s.includes('static')) continue;
-                                if (s.includes('p32x32') || s.includes('p40x40') || s.includes('p50x50') || s.includes('p60x60')) continue;
-                                if (s.includes('scontent') || s.includes('external.') || s.includes('fbcdn.net')) {
-                                    const w = im.naturalWidth || im.width || 0;
-                                    const h = im.naturalHeight || im.height || 0;
-                                    if (w > 120 || h > 90 || (!w && !s.includes('emoji'))) {
-                                        imgUrl = s;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        cur = cur.parentElement;
-                    }
-
-                    results.push({
-                        autor: autor,
-                        texto: text,
-                        url: directUrl,
-                        imgUrl: imgUrl
-                    });
-                }
             }
 
             return results;
@@ -393,19 +412,19 @@ def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> Lis
                 continue
 
             autor = item.get("autor") or "Vecinos en Facebook"
-            primer_renglon = txt.split("\n")[0][:75].strip()
-            url_final = limpiar_url_fb(item.get("url"))
+            if es_texto_basura_ui(autor, txt):
+                continue
 
-            # Evitar abrir pestañas secundarias en cada posteo para reutilizar la misma pestaña sin pestañeos
+            url_final = limpiar_url_fb(item.get("url"))
+            if not url_final or not es_url_publicacion_valida(url_final):
+                continue
+
+            primer_renglon = txt.split("\n")[0][:75].strip()
             comentarios = []
 
             texto_con_comentarios = txt
             if comentarios:
                 texto_con_comentarios += "\n\n💬 Comentarios destacados de vecinos:\n" + "\n".join(f"• {c}" for c in comentarios)
-
-            # Si no hay URL directa, usar perfil del autor o grupo directo
-            if not url_final:
-                url_final = f"https://www.facebook.com/search/posts?q={urllib.parse.quote(autor)}"
 
             posteos.append({
                 "fuente": "Facebook (Sesión Abierta)",
@@ -487,12 +506,15 @@ def extraer_posteos_twitter(page, url_busqueda: str, max_items: int = 8) -> List
                 autor = author_el.inner_text().split("\n")[0].strip() if author_el.count() else "Usuario X"
 
                 # Enlace directo al tweet
-                enlace = page.url
                 links = art.locator('a[href*="/status/"]').all()
-                if links:
-                    href = links[0].get_attribute("href")
-                    if href:
-                        enlace = f"https://x.com{href}" if not href.startswith("http") else href
+                if not links:
+                    continue
+                href = links[0].get_attribute("href")
+                if not href:
+                    continue
+                enlace = f"https://x.com{href}" if not href.startswith("http") else href
+                if not es_url_publicacion_valida(enlace):
+                    continue
 
                 img_el = art.locator('div[data-testid="tweetPhoto"] img').first
                 img_url = img_el.get_attribute("src") if img_el.count() else ""
@@ -635,11 +657,17 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
                     let directUrl = '';
                     for (const a of Array.from(card.querySelectorAll('a[href]'))) {
                         const h = a.href || '';
-                        if (h.includes('/permalink/') || h.includes('/posts/') || h.includes('/photo/') || h.includes('fbid=') || h.includes('/reel/')) {
+                        if (!h || h.includes('/search/') || h.includes('/hashtag/') || h.includes('/home.php') || h.includes('/stories/')) continue;
+                        if (h.includes('/permalink/') || h.includes('/posts/') || h.includes('/photo/') || h.includes('fbid=') || h.includes('/reel/') || h.includes('/videos/') || h.includes('/watch/?v=') || h.includes('story_fbid=')) {
+                            directUrl = h;
+                            break;
+                        }
+                        if (h.includes('l.facebook.com/l.php') && h.includes('u=')) {
                             directUrl = h;
                             break;
                         }
                     }
+                    if (!directUrl) continue;
 
                     let imgUrl = '';
                     for (const im of Array.from(card.querySelectorAll('img'))) {
@@ -671,11 +699,13 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
             items_grupo = 0
             for it in items:
                 txt = it.get("texto", "").strip()
-                if not txt or len(txt) < 25 or not es_texto_espanol(txt) or es_exclusion_geografica(txt):
+                autor = it.get("autor") or f"Vecino / Camarada en {g_nombre}"
+                if not txt or len(txt) < 25 or not es_texto_espanol(txt) or es_exclusion_geografica(txt) or es_texto_basura_ui(autor, txt):
                     continue
 
-                autor = it.get("autor") or f"Vecino / Camarada en {g_nombre}"
-                url_fin = limpiar_url_fb(it.get("directUrl")) or g_url
+                url_fin = limpiar_url_fb(it.get("directUrl"))
+                if not url_fin or not es_url_publicacion_valida(url_fin):
+                    continue
                 partido_det = detectar_partido_en_texto(f"{g_nombre} {autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
 
                 comentarios = it.get("comments") or []
@@ -788,11 +818,13 @@ def extraer_posteos_referentes_policiales(page, max_items: int = 5) -> List[Dict
                     let directUrl = '';
                     for (const a of Array.from(card.querySelectorAll('a[href]'))) {
                         const h = a.href || '';
-                        if (h.includes('/permalink/') || h.includes('/posts/') || h.includes('/photo/') || h.includes('fbid=') || h.includes('/reel/')) {
+                        if (!h || h.includes('/search/') || h.includes('/hashtag/') || h.includes('/home.php') || h.includes('/stories/')) continue;
+                        if (h.includes('/permalink/') || h.includes('/posts/') || h.includes('/photo/') || h.includes('fbid=') || h.includes('/reel/') || h.includes('/videos/') || h.includes('/watch/?v=') || h.includes('story_fbid=')) {
                             directUrl = h;
                             break;
                         }
                     }
+                    if (!directUrl) continue;
 
                     let imgUrl = '';
                     for (const im of Array.from(card.querySelectorAll('img'))) {
@@ -823,10 +855,12 @@ def extraer_posteos_referentes_policiales(page, max_items: int = 5) -> List[Dict
 
             for it in items:
                 txt = it.get("texto", "").strip()
-                if not txt or len(txt) < 25 or not es_texto_espanol(txt) or es_exclusion_geografica(txt):
-                    continue
                 autor = it.get("autor") or f_item["autor_default"]
-                url_fin = limpiar_url_fb(it.get("directUrl")) or f_item["url"]
+                if not txt or len(txt) < 25 or not es_texto_espanol(txt) or es_exclusion_geografica(txt) or es_texto_basura_ui(autor, txt):
+                    continue
+                url_fin = limpiar_url_fb(it.get("directUrl"))
+                if not url_fin or not es_url_publicacion_valida(url_fin):
+                    continue
                 partido_det = detectar_partido_en_texto(f"{autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
 
                 comentarios = it.get("comments") or []
@@ -881,6 +915,11 @@ def extraer_posteos_facebook_amigos(page, max_items: int = 5) -> List[Dict[str, 
             const cards = feed ? Array.from(feed.children) : [];
             const out = [];
             for (const card of cards) {
+                const cardText = (card.innerText || '').toLowerCase();
+                if (cardText.includes('¿qué estás pensando') || cardText.includes('que estas pensando') || cardText.includes('crear una publicación') || cardText.includes('publicaciones del feed') || cardText.includes('reels y videos') || cardText.includes('historias')) {
+                    continue;
+                }
+
                 const rawLines = (card.innerText || '').split('\n').map(l => l.replace(/Ver más/gi, '').trim()).filter(l => {
                     if (!l || l.length < 3 || l === 'Facebook' || l === '·' || l === 'Seguir' || l === 'Unirte') return false;
                     if (l.includes('Publicación compartida') || l.includes('Contenido sensible') || l.includes('Puede ser una imagen')) return false;
@@ -894,6 +933,21 @@ def extraer_posteos_facebook_amigos(page, max_items: int = 5) -> List[Dict[str, 
                 const texto = bodyLines.join('\n');
                 if (texto.length < 25) continue;
 
+                let directUrl = '';
+                for (const a of Array.from(card.querySelectorAll('a[href]'))) {
+                    const h = a.href || '';
+                    if (!h || h.includes('/search/') || h.includes('/hashtag/') || h.includes('/home.php') || h.includes('/stories/')) continue;
+                    if (h.includes('/posts/') || h.includes('/permalink/') || h.includes('/photo/') || h.includes('fbid=') || h.includes('/reel/') || h.includes('/videos/') || h.includes('/watch/?v=') || h.includes('story_fbid=')) {
+                        directUrl = h;
+                        break;
+                    }
+                    if (h.includes('l.facebook.com/l.php') && h.includes('u=')) {
+                        directUrl = h;
+                        break;
+                    }
+                }
+                if (!directUrl) continue;
+
                 let imgUrl = '';
                 for (const im of Array.from(card.querySelectorAll('img'))) {
                     const s = im.src || '';
@@ -903,14 +957,6 @@ def extraer_posteos_facebook_amigos(page, max_items: int = 5) -> List[Dict[str, 
                     }
                 }
 
-                let directUrl = '';
-                for (const a of Array.from(card.querySelectorAll('a[href]'))) {
-                    const h = a.href || '';
-                    if (h.includes('/posts/') || h.includes('/permalink/') || h.includes('/photo/') || h.includes('fbid=')) {
-                        directUrl = h;
-                        break;
-                    }
-                }
                 out.push({ autor, texto, imgUrl, directUrl });
             }
             return out;
@@ -918,11 +964,13 @@ def extraer_posteos_facebook_amigos(page, max_items: int = 5) -> List[Dict[str, 
 
         for it in items:
             txt = it.get("texto", "").strip()
-            if not txt or len(txt) < 30 or not es_texto_espanol(txt) or es_exclusion_geografica(txt):
+            autor = it.get("autor") or "Contacto en Facebook"
+            if not txt or len(txt) < 30 or not es_texto_espanol(txt) or es_exclusion_geografica(txt) or es_texto_basura_ui(autor, txt):
                 continue
 
-            autor = it.get("autor") or "Contacto en Facebook"
-            url_fin = limpiar_url_fb(it.get("directUrl")) or "https://www.facebook.com"
+            url_fin = limpiar_url_fb(it.get("directUrl"))
+            if not url_fin or not es_url_publicacion_valida(url_fin):
+                continue
             partido_det = detectar_partido_en_texto(f"{autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
 
             comentarios = []
@@ -1028,13 +1076,16 @@ def extraer_posteos_instagram(page, max_items: int = 6) -> List[Dict[str, Any]]:
                     txt = it.get("texto", "").strip()
                     if not txt or len(txt) < 25 or not es_texto_espanol(txt) or es_exclusion_geografica(txt):
                         continue
+                    post_url = (it.get("url") or "").strip()
+                    if not post_url or not es_url_publicacion_valida(post_url):
+                        continue
                     autor = it.get("autor", "Contacto en Instagram")
                     partido_det = detectar_partido_en_texto(f"{autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
                     primer_renglon = txt.split("\n")[0][:75].strip()
                     posteos.append({
                         "fuente": "Instagram (Seguidos / Amigos)",
                         "autor": autor,
-                        "url": it.get("url") or "https://www.instagram.com/",
+                        "url": post_url,
                         "titulo": f"{autor}: {primer_renglon}",
                         "texto": txt,
                         "comentarios": [],
@@ -1239,9 +1290,12 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
                     grupos_dest = conn.execute(
                         """
                         SELECT id, fuente, autor, partido, titulo, texto, url, imagen_url FROM hallazgos
-                        WHERE (edicion_id = ? OR id > (SELECT COALESCE(MAX(id)-20, 0) FROM hallazgos))
+                        WHERE (edicion_id = ? OR id > (SELECT COALESCE(MAX(id)-25, 0) FROM hallazgos))
                           AND (pasada IN ('grupos_vecinales', 'feed_amigos', 'referentes_policiales', 'instagram_amigos')
                                OR fuente LIKE '%Grupo%' OR fuente LIKE '%Amigos%' OR fuente LIKE '%Virginia%')
+                          AND url NOT LIKE '%facebook.com'
+                          AND url NOT LIKE '%facebook.com/'
+                          AND (url LIKE '%/posts/%' OR url LIKE '%/permalink/%' OR url LIKE '%/status/%' OR url LIKE '%/p/%' OR url LIKE '%/reel/%' OR url LIKE '%fbid=%' OR url NOT LIKE '%facebook.com%')
                         ORDER BY (imagen_url IS NOT NULL AND imagen_url != '') DESC, id DESC LIMIT 4
                         """,
                         (edicion_id,),
