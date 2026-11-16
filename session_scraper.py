@@ -11,7 +11,7 @@ import json
 import os
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import requests
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
@@ -86,13 +86,15 @@ def limpiar_url_fb(href: str) -> str:
     return href.split("?")[0] if href else ""
 
 
-def extraer_comentarios_twitter(context, tweet_url: str, max_replies: int = 3) -> List[str]:
+def extraer_comentarios_twitter(context, tweet_url: str, max_replies: int = 3) -> Tuple[List[str], str]:
     """
-    Abre el tweet directo en una pestaña en segundo plano y extrae respuestas/comentarios de vecinos.
+    Abre el tweet directo en una pestaña en segundo plano, extrae el texto completo
+    sin truncar y las respuestas/comentarios reales de los vecinos.
     """
     if not tweet_url or "/status/" not in tweet_url:
-        return []
+        return [], ""
     replies = []
+    main_text = ""
     p_tab = None
     try:
         p_tab = context.new_page()
@@ -101,9 +103,14 @@ def extraer_comentarios_twitter(context, tweet_url: str, max_replies: int = 3) -
         p_tab.mouse.wheel(0, 400)
         time.sleep(1)
 
-        replies = p_tab.evaluate(r"""() => {
+        res = p_tab.evaluate(r"""() => {
             const out = [];
             const arts = document.querySelectorAll('article[data-testid="tweet"]');
+            let mainTxt = '';
+            if (arts.length > 0) {
+                const mainEl = arts[0].querySelector('[data-testid="tweetText"]');
+                if (mainEl) mainTxt = (mainEl.innerText || '').trim();
+            }
             for (let i = 1; i < arts.length && out.length < 3; i++) {
                 const userEl = arts[i].querySelector('[data-testid="User-Name"]');
                 const user = userEl ? userEl.innerText.split('\n')[0] : 'Vecino';
@@ -115,8 +122,10 @@ def extraer_comentarios_twitter(context, tweet_url: str, max_replies: int = 3) -
                     }
                 }
             }
-            return out;
+            return { replies: out, mainText: mainTxt };
         }""")
+        replies = res.get("replies", [])
+        main_text = res.get("mainText", "")
     except Exception:
         pass
     finally:
@@ -125,7 +134,7 @@ def extraer_comentarios_twitter(context, tweet_url: str, max_replies: int = 3) -
                 p_tab.close()
             except Exception:
                 pass
-    return replies
+    return replies, main_text
 
 
 def extraer_comentarios_facebook(context, post_url: str, max_comentarios: int = 4) -> List[str]:
@@ -448,9 +457,11 @@ def extraer_posteos_twitter(page, url_busqueda: str, max_items: int = 8) -> List
                 img_url = img_el.get_attribute("src") if img_el.count() else ""
 
                 comentarios_tw = []
-                if enlace and "/status/" in enlace and len(tweets) < 2:
-                    print(f"  💬 Extrayendo respuestas de vecinos en X para: {autor}...")
-                    comentarios_tw = extraer_comentarios_twitter(page.context, enlace, max_replies=3)
+                if enlace and "/status/" in enlace and len(tweets) < 3:
+                    print(f"  💬 Extrayendo respuestas de vecinos y texto completo en X para: {autor}...")
+                    comentarios_tw, texto_full = extraer_comentarios_twitter(page.context, enlace, max_replies=3)
+                    if texto_full and len(texto_full) > len(texto):
+                        texto = texto_full
 
                 texto_con_comentarios = texto
                 if comentarios_tw:

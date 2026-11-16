@@ -7,6 +7,7 @@ con diseño profesional listo para compartir.
 
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timedelta
@@ -17,6 +18,49 @@ from database import get_conn
 BASE_DIR = os.path.dirname(__file__)
 PDF_OUTPUT_DIR = os.path.join(BASE_DIR, "reportes_pdf")
 os.makedirs(PDF_OUTPUT_DIR, exist_ok=True)
+
+
+def limpiar_y_cerrar_parrafos(texto: str, max_chars: int = 650) -> str:
+    """
+    Limpia el texto para que nunca quede cortado a mitad de una frase o palabra.
+    Si una publicación fue truncada en la red social, descarta el fragmento roto
+    y conserva las oraciones gramaticalmente completas.
+    """
+    if not texto:
+        return ""
+    t = re.sub(r'\.\.\.\s*Ver más', '', texto, flags=re.IGNORECASE)
+    t = re.sub(r'Ver más', '', t, flags=re.IGNORECASE)
+    t = re.sub(r'Mostrar más', '', t, flags=re.IGNORECASE)
+    t = re.sub(r'See more', '', t, flags=re.IGNORECASE)
+    t = t.strip()
+
+    palabras_colgadas = {
+        "a", "al", "de", "del", "en", "con", "sin", "por", "para", "e", "y", "o", "u",
+        "el", "la", "los", "las", "un", "una", "unos", "unas", "que", "se", "su", "sus",
+        "ambas", "ambos", "como", "pero", "mas", "más", "entre", "sobre", "tras", "hab"
+    }
+
+    if len(t) > max_chars:
+        corte = t[:max_chars]
+        ultimo_punto = max(corte.rfind(".\n"), corte.rfind(". "), corte.rfind("! "), corte.rfind("? "))
+        if ultimo_punto > 80:
+            t = corte[:ultimo_punto + 1].strip()
+
+    palabras = t.split()
+    if palabras and (palabras[-1].lower().rstrip(".,:;!?…-") in palabras_colgadas or t.endswith("...") or t.endswith("..")):
+        ultimo_punto = max(t.rfind(".\n"), t.rfind(". "), t.rfind("! "), t.rfind("? "))
+        if ultimo_punto > 40:
+            t = t[:ultimo_punto + 1].strip()
+        else:
+            palabras = t.split()
+            while palabras and palabras[-1].lower().rstrip(".,:;!?…-") in palabras_colgadas:
+                palabras.pop()
+            t = " ".join(palabras).strip()
+
+    if t and t[-1] not in ".!?:\"”’)":
+        t += "."
+
+    return t
 
 
 def encontrar_ejecutable_navegador() -> Optional[str]:
@@ -336,8 +380,7 @@ def generar_html_reporte(
         if " [Comentarios:" in texto_raw:
             texto_raw = texto_raw.split(" [Comentarios:")[0].strip()
         partes = texto_raw.split("💬 Comentarios destacados de vecinos:")
-        texto_principal = partes[0].strip()
-        # Mostrar el texto completo de la publicación sin recortar a 350 caracteres
+        texto_principal = limpiar_y_cerrar_parrafos(partes[0].strip())
 
         bloque_comentarios = ""
         comentarios_lista = []
