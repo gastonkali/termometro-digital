@@ -396,11 +396,8 @@ def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> Lis
             primer_renglon = txt.split("\n")[0][:75].strip()
             url_final = limpiar_url_fb(item.get("url"))
 
-            # Extraer comentarios reales si hay URL directa de post/foto
+            # Evitar abrir pestañas secundarias en cada posteo para reutilizar la misma pestaña sin pestañeos
             comentarios = []
-            if url_final and any(k in url_final for k in ["/photo/", "/posts/", "/permalink/", "fbid="]):
-                print(f"  💬 Extrayendo comentarios de vecinos para: {autor}...")
-                comentarios = extraer_comentarios_facebook(page.context, url_final, max_comentarios=4)
 
             texto_con_comentarios = txt
             if comentarios:
@@ -444,16 +441,11 @@ def extraer_posteos_twitter(page, url_busqueda: str, max_items: int = 8) -> List
         page.goto(url_busqueda, timeout=35000, wait_until="domcontentloaded")
         time.sleep(3)
 
-        # Verificar si X solicita verificación humana o login challenge
+        # Verificar solo si hay un bloqueo real visible y no hay tweets
         try:
-            page_content = (page.content() or "").lower()
-            if any(term in page_content for term in ["arkose", "challenge", "verify you are human", "confirma que eres humano", "verificar tu cuenta", "comprueba que eres humano"]):
-                print("  ⚠️ [Aviso X/Twitter]: Se detectó solicitud de verificación humana (anti-bot) en X.")
-                print("     Ventana visible activa. Si la ves en tu escritorio, podés hacer clic para resolverla (esperando 15s)...")
-                time.sleep(15)
-                page_content = (page.content() or "").lower()
-                if any(term in page_content for term in ["arkose", "challenge", "verify you are human", "confirma que eres humano", "verificar tu cuenta"]):
-                    print("     Avanzando sin X para no bloquear la recolección de Facebook e Instagram...")
+            if page.locator('article[data-testid="tweet"]').count() == 0:
+                if page.locator('iframe[src*="arkose"], iframe[id*="arkose"]').count() > 0 or any(term in (page.inner_text("body") or "").lower() for term in ["confirma que eres humano", "verify you are human", "comprueba que eres humano"]):
+                    print("  ⚠️ [Aviso X/Twitter]: Se detectó solicitud de verificación humana en X.")
                     return []
         except Exception:
             pass
@@ -506,11 +498,6 @@ def extraer_posteos_twitter(page, url_busqueda: str, max_items: int = 8) -> List
                 img_url = img_el.get_attribute("src") if img_el.count() else ""
 
                 comentarios_tw = []
-                if enlace and "/status/" in enlace and len(tweets) < 3:
-                    print(f"  💬 Extrayendo respuestas de vecinos y texto completo en X para: {autor}...")
-                    comentarios_tw, texto_full = extraer_comentarios_twitter(page.context, enlace, max_replies=3)
-                    if texto_full and len(texto_full) > len(texto):
-                        texto = texto_full
 
                 texto_con_comentarios = texto
                 if comentarios_tw:
@@ -1070,10 +1057,9 @@ def extraer_posteos_instagram(page, max_items: int = 6) -> List[Dict[str, Any]]:
                     if len(posteos) >= max_items:
                         break
                     try:
-                        p_tab = page.context.new_page()
-                        p_tab.goto(plink, timeout=20000, wait_until="domcontentloaded")
-                        time.sleep(2.5)
-                        det = p_tab.evaluate(r"""() => {
+                        page.goto(plink, timeout=20000, wait_until="domcontentloaded")
+                        time.sleep(2)
+                        det = page.evaluate(r"""() => {
                             let autor = '';
                             const a_el = document.querySelector('header a, h2 a');
                             if (a_el) autor = (a_el.innerText || '').trim();
@@ -1099,7 +1085,6 @@ def extraer_posteos_instagram(page, max_items: int = 6) -> List[Dict[str, Any]]:
                             }
                             return { autor, texto, imgUrl };
                         }""")
-                        p_tab.close()
 
                         txt_ig = det.get("texto", "").strip()
                         if not txt_ig or len(txt_ig) < 25 or not es_texto_espanol(txt_ig) or es_exclusion_geografica(txt_ig):
@@ -1143,7 +1128,7 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
     print(f"Modo Headless: {headless}")
 
     p, context = lanzar_navegador_sesion(headless=headless)
-    page = context.new_page()
+    page = context.pages[0] if context.pages else context.new_page()
 
     # Rotación dinámica de consultas entre pasadas para cubrir los 135 partidos
     matriz_completa = generar_matriz_consultas_multired()
