@@ -26,3 +26,7 @@ env/
 .vscode/
 .idea/
 *.swp
+
+# Logs y estado de ejecución local
+*.log
+scraper_state.json

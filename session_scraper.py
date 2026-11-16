@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 import requests
 from dotenv import load_dotenv
@@ -878,7 +879,30 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
     p, context = lanzar_navegador_sesion(headless=headless)
     page = context.new_page()
 
-    matriz = generar_matriz_consultas_multired()[:max_consultas]
+    # Rotación dinámica de consultas entre pasadas para cubrir los 135 partidos
+    matriz_completa = generar_matriz_consultas_multired()
+    state_file = os.path.join(BASE_DIR, "scraper_state.json")
+    idx_inicio = 0
+    if os.path.exists(state_file):
+        try:
+            with open(state_file, "r", encoding="utf-8") as sf:
+                sdata = json.load(sf)
+                idx_inicio = sdata.get("proximo_indice", 0) % len(matriz_completa)
+        except Exception:
+            idx_inicio = 0
+
+    matriz = [matriz_completa[(idx_inicio + i) % len(matriz_completa)] for i in range(max_consultas)]
+    proximo_idx = (idx_inicio + max_consultas) % len(matriz_completa)
+    try:
+        with open(state_file, "w", encoding="utf-8") as sf:
+            json.dump({
+                "proximo_indice": proximo_idx,
+                "ultima_ejecucion": datetime.now().isoformat(),
+                "consultas_ejecutadas": [m.get("fb_search_query") for m in matriz]
+            }, sf, indent=2)
+    except Exception:
+        pass
+
     total_recolectados = []
 
     try:
@@ -949,7 +973,8 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
                         (edicion_id,),
                     ).fetchall()
                     nombres = conn.execute(
-                        "SELECT nombre FROM nombres_propios WHERE vigente = 1 LIMIT 5"
+                        "SELECT nombre FROM nombres_propios WHERE ultima_edicion_id = ? OR vigente = 1 ORDER BY (ultima_edicion_id = ?) DESC, id DESC LIMIT 5",
+                        (edicion_id, edicion_id),
                     ).fetchall()
                     hallazgos_dest = conn.execute(
                         "SELECT partido, autor, texto FROM hallazgos WHERE edicion_id = ? AND descartado = 0 ORDER BY id DESC LIMIT 3",

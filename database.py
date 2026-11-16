@@ -256,9 +256,6 @@ def insertar_hallazgo(datos: Dict[str, Any]) -> bool:
             if datos.get("comentarios"):
                 updates.append("comentarios_json = ?")
                 params.append(json.dumps(datos.get("comentarios", []), ensure_ascii=False))
-            if datos.get("edicion_id"):
-                updates.append("edicion_id = ?")
-                params.append(datos.get("edicion_id"))
             if updates:
                 params.append(u_hash)
                 cur.execute(f"UPDATE hallazgos SET {', '.join(updates)} WHERE url_hash = ?", params)

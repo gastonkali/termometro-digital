@@ -38,14 +38,10 @@ def ejecutar_reporte_matutino(horas_atras: int = 12):
         (corte_iso,),
     ).fetchall()
 
-    if not hallazgos_12hs:
-        hallazgos_12hs = conn.execute(
-            "SELECT * FROM hallazgos WHERE descartado = 0 ORDER BY id DESC LIMIT 30"
-        ).fetchall()
-
     convocatorias = [h for h in hallazgos_12hs if h["es_convocatoria"] == 1]
     nombres = conn.execute(
-        "SELECT nombre FROM nombres_propios WHERE vigente = 1 LIMIT 5"
+        "SELECT DISTINCT nombre FROM nombres_propios WHERE creado_en >= ? OR vigente = 1 ORDER BY (creado_en >= ?) DESC, id DESC LIMIT 5",
+        (corte_iso, corte_iso),
     ).fetchall()
     conn.close()
 

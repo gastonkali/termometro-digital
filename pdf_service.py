@@ -19,6 +19,7 @@ Página 2:
 - Footer institucional.
 """
 
+import html as html_lib
 import json
 import os
 import re
@@ -63,6 +64,32 @@ def encontrar_ejecutable_navegador() -> Optional[str]:
     return None
 
 
+
+def recortar_texto_limpio(texto: str, max_chars: int = 140) -> str:
+    if not texto:
+        return ""
+    t = " ".join(texto.split()).strip()
+    if len(t) <= max_chars:
+        if t.count("“") > t.count("”"):
+            t += "”"
+        if t.count('"') % 2 != 0:
+            t += '"'
+        return t
+    
+    recorte = t[:max_chars].rsplit(" ", 1)[0]
+    recorte = re.sub(r'[,;:\-–—\s]+$', '', recorte)
+    if recorte.count("“") > recorte.count("”"):
+        recorte += "”"
+    if recorte.count('"') % 2 != 0:
+        recorte += '"'
+    if not recorte.endswith((".", "!", "?", "”", '"', "...")):
+        recorte += "..."
+    return recorte
+
+
+def limpiar_contexto_nombre(texto: str, max_chars: int = 140) -> str:
+    return recortar_texto_limpio(texto, max_chars=max_chars)
+
 def clasificar_descartes_y_vigentes(hallazgos_raw: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Separa las publicaciones entre Vigentes en PBA y Descartadas (desactualizadas, fuera de alcance CABA, autopromoción).
@@ -79,7 +106,7 @@ def clasificar_descartes_y_vigentes(hallazgos_raw: List[Dict[str, Any]]) -> Tupl
         if es_ruido:
             descartados.append({
                 "publicacion": f"{h.get('autor') or h.get('fuente', 'Redes')} ({h.get('fuente', 'Web')})",
-                "contenido": h.get("texto", h.get("titulo", ""))[:140],
+                "contenido": recortar_texto_limpio(h.get("texto", h.get("titulo", "")), 130),
                 "motivo": razon_ruido,
                 "url": h.get("url", "#")
             })
@@ -97,7 +124,7 @@ def clasificar_descartes_y_vigentes(hallazgos_raw: List[Dict[str, Any]]) -> Tupl
 
             descartados.append({
                 "publicacion": f"{h.get('autor') or h.get('fuente', 'Redes')} ({h.get('fuente', 'Web')})",
-                "contenido": h.get("texto", h.get("titulo", ""))[:140],
+                "contenido": recortar_texto_limpio(h.get("texto", h.get("titulo", "")), 130),
                 "motivo": f"Desactualizada: {fecha_str}.{partido_erroneo}",
                 "url": h.get("url", "#")
             })
@@ -107,7 +134,7 @@ def clasificar_descartes_y_vigentes(hallazgos_raw: List[Dict[str, Any]]) -> Tupl
         if es_exclusion_geografica(comb, h.get("partido", "")):
             descartados.append({
                 "publicacion": f"{h.get('autor') or h.get('fuente', 'Redes')}",
-                "contenido": h.get("texto", h.get("titulo", ""))[:140],
+                "contenido": recortar_texto_limpio(h.get("texto", h.get("titulo", "")), 130),
                 "motivo": "Fuera de alcance: Ocurrió en CABA u otra provincia.",
                 "url": h.get("url", "#")
             })
@@ -134,70 +161,34 @@ def generar_html_reporte(
             (corte_iso,),
         ).fetchall()
         edicion_str = f"Consolidado {horas_atras}hs"
+        nombres_rows_raw = conn.execute(
+            "SELECT * FROM nombres_propios WHERE creado_en >= ? OR vigente = 1 ORDER BY (creado_en >= ?) DESC, id DESC LIMIT 5",
+            (corte_iso, corte_iso),
+        ).fetchall()
+        propuestas_rows_raw = conn.execute(
+            "SELECT * FROM palabras_candidatas WHERE actualizado_en >= ? OR estado = 'observando' ORDER BY (actualizado_en >= ?) DESC, id DESC LIMIT 5",
+            (corte_iso, corte_iso),
+        ).fetchall()
     else:
         hallazgos_rows = conn.execute(
             "SELECT * FROM hallazgos WHERE edicion_id = ? ORDER BY es_convocatoria DESC, id DESC",
             (edicion_id,),
         ).fetchall()
-        if not hallazgos_rows:
-            hallazgos_rows = conn.execute(
-                "SELECT * FROM hallazgos ORDER BY es_convocatoria DESC, id DESC LIMIT 50"
-            ).fetchall()
         edicion_str = f"Edición #{edicion_id or 1}"
-
-    nombres_rows = conn.execute("SELECT * FROM nombres_propios ORDER BY vigente DESC, apariciones DESC LIMIT 10").fetchall()
-    propuestas_rows = conn.execute("SELECT * FROM palabras_candidatas LIMIT 8").fetchall()
+        nombres_rows_raw = conn.execute(
+            "SELECT * FROM nombres_propios WHERE ultima_edicion_id = ? OR vigente = 1 ORDER BY (ultima_edicion_id = ?) DESC, id DESC LIMIT 5",
+            (edicion_id, edicion_id),
+        ).fetchall()
+        propuestas_rows_raw = conn.execute(
+            "SELECT * FROM palabras_candidatas WHERE ultima_edicion_id = ? OR estado = 'observando' ORDER BY (ultima_edicion_id = ?) DESC, id DESC LIMIT 5",
+            (edicion_id, edicion_id),
+        ).fetchall()
     conn.close()
+    nombres_rows = [dict(r) for r in nombres_rows_raw]
+    propuestas_rows = [dict(r) for r in propuestas_rows_raw]
 
     raw_items = [dict(r) for r in hallazgos_rows]
     vigentes_items, descartados_items = clasificar_descartes_y_vigentes(raw_items)
-
-    # Si hay muy pocos descartados simulados, poblar con ejemplos de la muestra del modelo
-    if len(descartados_items) == 0:
-        descartados_items = [
-            {
-                "publicacion": "Agencia El Vigía (X)",
-                "contenido": "Vecinos del barrio Núñez (Sarandí) cortan la Autopista Bs. As.–La Plata tras más de 48 h sin luz.",
-                "motivo": "Desactualizada: 15/03/2023. Además, mal ubicada: Avellaneda, no La Plata.",
-                "url": "https://x.com/agenciaelvigia"
-            },
-            {
-                "publicacion": "Periodismo_Movil (X)",
-                "contenido": "Incidentes entre vecinos y la Policía en la bajada de la autopista en Quilmes (calle Iriarte), por un reclamo a Edesur.",
-                "motivo": "Desactualizada: 26/06/2024. Mal ubicada: Quilmes, no La Plata.",
-                "url": "https://x.com/periodismomovil"
-            },
-            {
-                "publicacion": "Marcelo Fava (X)",
-                "contenido": "Piquete en la autopista a la altura de Bernal por un corte de luz.",
-                "motivo": "Desactualizada: 17/02/2024. Mal ubicada: Quilmes, no La Plata.",
-                "url": "https://x.com/marcelofava"
-            },
-            {
-                "publicacion": "Agarra la Pala (X)",
-                "contenido": "Crítica al gobernador con la imagen de un patrullero.",
-                "motivo": "Desactualizada: 30/03/2025.",
-                "url": "https://x.com"
-            },
-            {
-                "publicacion": "Pulso Federal (X)",
-                "contenido": "Fuga de Leonardo Bertulazzi (ex Brigadas Rojas) de su arresto domiciliario.",
-                "motivo": "Fuera de alcance: ocurrió en CABA (Defensa al 600, San Telmo). Estaba asignada a Rojas.",
-                "url": "https://x.com"
-            },
-            {
-                "publicacion": "Willian M. Rosa (X)",
-                "contenido": "Reunión bilateral entre la Federación Latinoamericana de Fiscales y la Asociación Internacional de Fiscales.",
-                "motivo": "No pertinente: actividad institucional, sin conflictividad.",
-                "url": "https://x.com"
-            },
-            {
-                "publicacion": "Vecinos Vicente López (X)",
-                "contenido": "“Vicente López es el distrito más seguro de la provincia”.",
-                "motivo": "No pertinente: autopromoción; la cuenta se comenta a sí misma.",
-                "url": "https://x.com"
-            }
-        ]
 
     # Agrupar vigentes en clusters
     clusters_vigentes = agrupar_en_clusters(vigentes_items)
@@ -225,19 +216,27 @@ def generar_html_reporte(
         clima_bg = "#16a34a"
 
     # Redacción analítica del Semáforo
+    focos_activos = [c for c in clusters_vigentes if c["clima_estado"] in ("MODERADO", "EN ALERTA")]
     foco_principal = clusters_vigentes[0] if clusters_vigentes else None
     if foco_principal and clima_txt in ("MODERADO", "EN ALERTA"):
+        if len(focos_activos) > 1:
+            partidos_foco = ", ".join(sorted(set(c["partido"] for c in focos_activos[:3])))
+            lead_foco = f"<strong>Focos de conflictividad vigentes en: {html_lib.escape(partidos_foco)}</strong>, principalmente con {html_lib.escape(foco_principal['titulo_cluster'].lower())} ({html_lib.escape(foco_principal['reaccion_vecinal'].lower())})."
+        else:
+            lead_foco = f"<strong>Foco de conflictividad vigente: {html_lib.escape(foco_principal['partido'])}</strong>, con {html_lib.escape(foco_principal['titulo_cluster'].lower())} ({html_lib.escape(foco_principal['reaccion_vecinal'].lower())})."
+        
+        desc_descartes = (
+            f" De las {total_relevadas} publicaciones relevadas, {len(descartados_items)} se descartaron por desactualizadas o fuera de alcance (ver Anexo)."
+            if descartados_items else " Todas las publicaciones relevadas corresponden al ámbito bonaerense vigente."
+        )
         texto_analisis_clima = (
-            f"<strong>Único foco de conflictividad vigente: {foco_principal['partido']}</strong>, con una {foco_principal['titulo_cluster'].lower()} "
-            f"({foco_principal['reaccion_vecinal'].lower()}).<br/>"
-            f"Sin convocatorias masivas adicionales con fecha u horario en este corte. El resto de lo vigente corresponde a críticas de "
-            f"imagen institucional sobre seguridad y a información de tránsito. De las {total_relevadas} publicaciones relevadas, "
-            f"{len(descartados_items)} se descartaron por estar desactualizadas (2023–2025) o fuera de alcance (ver Anexo)."
+            f"{lead_foco}<br/>"
+            f"Sin convocatorias masivas adicionales con fecha u horario en este corte.{desc_descartes}"
         )
     else:
         texto_analisis_clima = (
-            "Sin focos masivos de conflictividad detectados en la última hora. Tránsito fluido en las principales trazas "
-            "y reclamos habituales de servicios canalizados por vías de atención regulares."
+            "Sin focos masivos de conflictividad detectados en este turno de monitoreo. Tránsito con fluidez habitual "
+            "en las principales trazas y reclamos vecinales de servicios canalizados por vías de atención regulares."
         )
 
     fecha_hora = datetime.now().strftime("%d/%m/%Y %H:%M")
@@ -655,28 +654,85 @@ def generar_html_reporte(
     if destacado_item:
         rep = destacado_item["representante"]
         url_destacada = destacado_item["urls"][0] if destacado_item["urls"] else "#"
-        fuente_destacada = destacado_item.get("fuentes_nombres", ["CTA Provincia de Buenos Aires"])[0] if destacado_item.get("fuentes_nombres") else "Fuente vecinal"
+        fuente_destacada = (
+            destacado_item.get("fuentes_nombres", [rep.get("autor") or "Vecinos"])[0]
+            if destacado_item.get("fuentes_nombres")
+            else (rep.get("autor") or "Vecinos")
+        )
+        plataforma_dest = rep.get("fuente", "Redes Sociales")
+        fecha_pub_dest = rep.get("fecha_publicacion", "Reciente")
+        clima_dest = destacado_item["clima_estado"]
+        pill_dest_class = (
+            "pill-clima-alerta" if clima_dest == "EN ALERTA"
+            else ("pill-clima-moderado" if clima_dest == "MODERADO" else "pill-clima-bueno")
+        )
+
+        img_dest = rep.get("imagen_url")
+        if img_dest and img_dest.startswith("http"):
+            thumb_html = f'<img class="destacado-thumb" src="{html_lib.escape(img_dest)}" alt="Foto Hecho" />'
+        else:
+            thumb_html = (
+                f'<div class="destacado-thumb" style="display:flex;flex-direction:column;align-items:center;justify-content:center;background:#f1f5f9;color:#334155;font-weight:700;font-size:7.5pt;text-align:center;padding:4px;border:1px solid #cbd5e1;">'
+                f'<span style="font-size:12pt;margin-bottom:2px;">📍</span>'
+                f'{html_lib.escape(destacado_item["partido"])}'
+                f'</div>'
+            )
+
+        desc_cruda = rep.get("texto") or rep.get("titulo") or destacado_item["titulo_cluster"]
+        desc_limpia = recortar_texto_limpio(desc_cruda, max_chars=260)
+
+        comentarios_raw = rep.get("comentarios") or rep.get("comentarios_json") or []
+        if isinstance(comentarios_raw, str):
+            try:
+                comentarios_raw = json.loads(comentarios_raw)
+            except Exception:
+                comentarios_raw = []
+
+        if comentarios_raw and isinstance(comentarios_raw, list):
+            comms_items_html = ""
+            for comm in comentarios_raw[:3]:
+                comm_str = str(comm).strip()
+                if " - · - " in comm_str:
+                    c_parts = comm_str.split(" - · - ")
+                    c_autor = c_parts[0].strip()
+                    c_txt = c_parts[-1].strip()
+                    comms_items_html += f"<li><strong>{html_lib.escape(c_autor)}:</strong> “{html_lib.escape(recortar_texto_limpio(c_txt, 110))}”</li>"
+                elif ":" in comm_str:
+                    c_parts = comm_str.split(":", 1)
+                    c_autor = c_parts[0].strip()
+                    c_txt = c_parts[1].strip()
+                    comms_items_html += f"<li><strong>{html_lib.escape(c_autor)}:</strong> “{html_lib.escape(recortar_texto_limpio(c_txt, 110))}”</li>"
+                else:
+                    comms_items_html += f"<li>“{html_lib.escape(recortar_texto_limpio(comm_str, 120))}”</li>"
+            bloque_comentarios = f"""
+            <div class="destacado-comentarios">
+              <strong>Comentarios relevantes:</strong>
+              <ul>
+                {comms_items_html}
+              </ul>
+            </div>
+            """
+        else:
+            bloque_comentarios = """
+            <div class="destacado-comentarios" style="color:#64748b; font-style:italic; margin-top:4px;">
+              Sin comentarios adicionales registrados en la publicación original.
+            </div>
+            """
 
         html += f"""
     <div class="destacado-card">
       <div class="destacado-flex">
-        <img class="destacado-thumb" src="https://images.unsplash.com/photo-1466611653911-95081537e5b7?auto=format&fit=crop&w=300&q=80" alt="Foto Hecho" />
+        {thumb_html}
         <div class="destacado-body">
-          <div class="destacado-header">{destacado_item['partido']} — {destacado_item['titulo_cluster']}</div>
+          <div class="destacado-header">{html_lib.escape(destacado_item['partido'])} — {html_lib.escape(destacado_item['titulo_cluster'])}</div>
           <div class="destacado-meta">
-            <span class="pill-clima pill-clima-moderado" style="font-size: 6.5pt; padding: 1px 4px;">{destacado_item['clima_estado']}</span>
-            {fuente_destacada} · Facebook · comentarios de hace 13 a 21 h · <a class="link-inline" href="{url_destacada}">Abrir publicación original ↗</a>
+            <span class="pill-clima {pill_dest_class}" style="font-size: 6.5pt; padding: 1px 4px;">{clima_dest}</span>
+            {html_lib.escape(fuente_destacada)} · {html_lib.escape(plataforma_dest)} · {html_lib.escape(fecha_pub_dest)} · <a class="link-inline" href="{url_destacada}">Abrir publicación original ↗</a>
           </div>
           <div class="destacado-desc">
-            {rep.get('texto', destacado_item['titulo_cluster'])[:260]}
+            {html_lib.escape(desc_limpia)}
           </div>
-          <div class="destacado-comentarios">
-            <strong>Comentarios relevantes:</strong>
-            <ul>
-              <li>Martín Coria: “Que no se note mucho que estás buscando un puestito para las próximas elecciones.”</li>
-              <li>Jorge Sepúlveda: “Mira si no podrían destinar una mínima porción de energía a las instituciones como el centro de día y noche, colegios, hospita…”</li>
-            </ul>
-          </div>
+          {bloque_comentarios}
         </div>
       </div>
     </div>
@@ -684,14 +740,44 @@ def generar_html_reporte(
     else:
         html += """
     <div class="destacado-card">
-      <div class="destacado-desc">Sin incidentes de magnitud excepcional destacados en este turno de monitoreo.</div>
+      <div class="destacado-desc" style="color: #64748b; font-style: italic;">
+        Sin incidentes de conflictividad destacados en este turno de monitoreo. Situación de normalidad vecinal en los 135 partidos de la PBA.
+      </div>
     </div>
         """
+
+    convocatorias_items = [c for c in clusters_vigentes if c["es_convocatoria"]]
+    if convocatorias_items:
+        agenda_html = """<table class="data-table" style="margin-bottom:8px;">
+      <thead>
+        <tr>
+          <th style="width: 18%;">Partido</th>
+          <th style="width: 48%;">Convocatoria / Reclamo</th>
+          <th style="width: 20%;">Reacción vecinal</th>
+          <th style="width: 14%;">Fuente</th>
+        </tr>
+      </thead>
+      <tbody>"""
+        for cv in convocatorias_items[:3]:
+            cv_fuente = cv.get("fuentes_nombres", ["Vecinos"])[0] if cv.get("fuentes_nombres") else "Vecinos"
+            cv_url = cv["urls"][0] if cv["urls"] else "#"
+            agenda_html += f"""
+        <tr>
+          <td><strong>{html_lib.escape(cv['partido'])}</strong></td>
+          <td>{html_lib.escape(cv['titulo_cluster'])}</td>
+          <td>{html_lib.escape(cv['reaccion_vecinal'])}</td>
+          <td>{html_lib.escape(cv_fuente)} · <a class="link-inline" href="{cv_url}">ver ↗</a></td>
+        </tr>"""
+        agenda_html += """
+      </tbody>
+    </table>"""
+    else:
+        agenda_html = '<div class="agenda-empty">No se detectaron convocatorias con fecha u horario en este corte.</div>'
 
     html += f"""
     <!-- AGENDA DE CONVOCATORIAS -->
     <div class="section-title">Agenda de convocatorias y protestas</div>
-    <div class="agenda-empty">No se detectaron convocatorias con fecha u horario en este corte.</div>
+    {agenda_html}
   </div>
 
   <!-- PÁGINA 2: ANEXOS -->
@@ -709,13 +795,26 @@ def generar_html_reporte(
       <tbody>
 """
 
-    for d in descartados_items[:8]:
-        html += f"""
+    if descartados_items:
+        for d in descartados_items[:8]:
+            d_pub = html_lib.escape(d.get("publicacion", "Fuente"))
+            d_cont = html_lib.escape(recortar_texto_limpio(d.get("contenido", ""), 120))
+            d_mot = html_lib.escape(d.get("motivo", "Descarte"))
+            d_url = d.get("url", "#")
+            html += f"""
         <tr>
-          <td><strong>{d['publicacion']}</strong></td>
-          <td>{d['contenido']}</td>
-          <td class="motivo-descarte">{d['motivo']}</td>
-          <td style="text-align: center;"><a class="link-inline" href="{d['url']}">↗</a></td>
+          <td><strong>{d_pub}</strong></td>
+          <td>{d_cont}</td>
+          <td class="motivo-descarte">{d_mot}</td>
+          <td style="text-align: center;"><a class="link-inline" href="{d_url}">↗</a></td>
+        </tr>
+            """
+    else:
+        html += """
+        <tr>
+          <td colspan="4" style="text-align: center; color: #64748b; font-style: italic; padding: 10px;">
+            No se registraron publicaciones fuera de alcance o desactualizadas en este corte.
+          </td>
         </tr>
         """
 
@@ -724,7 +823,7 @@ def generar_html_reporte(
     </table>
     <div class="clarification-note">Las fechas de las publicaciones de X se obtuvieron del identificador de cada publicación.</div>
 
-    <div class="section-title" style="margin-top: 14px; font-size: 11pt;">Anexo — Figuras y palabras nuevas</div>
+    <div class="section-title" style="margin-top: 14px; font-size: 11pt;">Anexo — Figuras públicas / personas mencionadas por los vecinos y palabras nuevas</div>
     <table class="data-table anexo-table">
       <thead>
         <tr>
@@ -734,29 +833,64 @@ def generar_html_reporte(
         </tr>
       </thead>
       <tbody>
+"""
+
+    filas_anexo_figuras = 0
+    for nr in nombres_rows[:4]:
+        n_nombre = nr["nombre"]
+        n_tipo = nr.get("tipo", "Figura / Persona")
+        n_partido = nr.get("partido", "Provincia de Buenos Aires")
+        n_ctx = limpiar_contexto_nombre(nr.get("contexto", ""), 100)
+        n_apariciones = nr.get("apariciones", 1)
+        menciones_str = f"{n_apariciones} mención" if n_apariciones == 1 else f"{n_apariciones} menciones"
+        estado_badge = (
+            '<span class="estado-col estado-mantenido">Mencionado por vecinos</span>'
+            if nr.get("vigente", 1)
+            else '<span class="estado-col estado-descartado">Descartado</span>'
+        )
+
+        html += f"""
         <tr>
-          <td><strong>“Toto” Arruabarrena</strong></td>
-          <td>Lobería: contrapunto con Pablo Barrena en la inauguración de la Expo Lobería 2026 (1 mención).</td>
-          <td class="estado-col estado-mantenido">Se mantiene como figura mencionada.</td>
+          <td><strong>“{html_lib.escape(n_nombre)}”</strong><br/><span style="font-size: 6.8pt; color: #64748b;">({html_lib.escape(n_tipo)})</span></td>
+          <td><strong>{html_lib.escape(n_partido)}:</strong> {html_lib.escape(n_ctx)} ({menciones_str})</td>
+          <td class="estado-col">{estado_badge}</td>
         </tr>
+        """
+        filas_anexo_figuras += 1
+
+    for pr in propuestas_rows[:4]:
+        p_palabra = pr["palabra"]
+        p_cat = pr.get("categoria_sugerida", "general")
+        p_partido = pr.get("partido_origen", "PBA")
+        p_ej = limpiar_contexto_nombre(pr.get("ejemplo_texto", ""), 95)
+        p_estado = pr.get("estado", "observando")
+        estado_badge = (
+            '<span class="estado-col estado-pendiente">En observación</span>'
+            if p_estado == "observando"
+            else f'<span class="estado-col estado-descartado">{html_lib.escape(p_estado)}</span>'
+        )
+
+        html += f"""
         <tr>
-          <td><strong>“Núñez”</strong></td>
-          <td>Detectado como figura/persona.</td>
-          <td class="estado-col estado-descartado">Descartado: es un barrio de Sarandí y la publicación es de 2023.</td>
+          <td><strong>{html_lib.escape(p_palabra)}</strong><br/><span style="font-size: 6.8pt; color: #64748b;">Eje: {html_lib.escape(p_cat)}</span></td>
+          <td><strong>{html_lib.escape(p_partido)}:</strong> {html_lib.escape(p_ej)}</td>
+          <td class="estado-col">{estado_badge}</td>
         </tr>
+        """
+        filas_anexo_figuras += 1
+
+    if filas_anexo_figuras == 0:
+        html += """
         <tr>
-          <td><strong>#lamañanadeelobservado</strong></td>
-          <td>Sugerida para sociales/servicios · origen: La Matanza · 2 ediciones seguidas.</td>
-          <td class="estado-col estado-pendiente">Pendiente de revisión.</td>
+          <td colspan="3" style="text-align: center; color: #64748b; font-style: italic; padding: 10px;">
+            Sin figuras públicas ni términos atípicos nuevos detectados en este corte.
+          </td>
         </tr>
-        <tr>
-          <td><strong>#municipio #politica<br/>#vicentelopez #seguridad</strong></td>
-          <td>Sugeridas para sociales/servicios · origen: Vicente López · 2 ediciones seguidas.</td>
-          <td class="estado-col estado-descartado">Descartadas: vienen de la cuenta de autopromoción.</td>
-        </tr>
+        """
+
+    html += f"""
       </tbody>
     </table>
-
     <div class="doc-footer">
       Reporte generado por Termómetro Digital · Cobertura: 135 municipios bonaerenses · Excluye CABA y otras provincias · Versión modelo de Alertas
     </div>
@@ -834,5 +968,7 @@ if __name__ == "__main__":
     conn = get_conn()
     ult = conn.execute("SELECT MAX(id) AS m FROM ediciones").fetchone()["m"] or 1
     conn.close()
+    nombres_rows = [dict(r) for r in nombres_rows_raw]
+    propuestas_rows = [dict(r) for r in propuestas_rows_raw]
     pdf = crear_reporte_pdf_edicion(ult)
     print(f"PDF generado: {pdf}")

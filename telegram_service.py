@@ -5,6 +5,7 @@ Envía resúmenes ejecutivos y adjunta el archivo PDF directamente al chat de Te
 """
 
 import os
+import re
 from typing import Any, Dict, Optional
 import requests
 from dotenv import load_dotenv
@@ -15,8 +16,20 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 
+def recortar_telegram(texto: str, max_chars: int = 120) -> str:
+    if not texto:
+        return ""
+    t = " ".join(texto.replace("\n", " ").split()).strip()
+    if len(t) <= max_chars:
+        return t
+    recorte = t[:max_chars].rsplit(" ", 1)[0]
+    recorte = re.sub(r'[,;:\-–—\s]+$', '', recorte)
+    return recorte + "..."
+
+
 def formatear_mensaje_telegram(datos_edicion: Dict[str, Any]) -> str:
     edicion_id = datos_edicion.get("edicion_id", 1)
+    edicion_label = f"Edición #{edicion_id}" if isinstance(edicion_id, int) or str(edicion_id).isdigit() else str(edicion_id)
     hallazgos = datos_edicion.get("total_hallazgos", 0)
     nuevos = datos_edicion.get("nuevos_hallazgos", 0)
     convocatorias = datos_edicion.get("convocatorias", [])
@@ -24,7 +37,7 @@ def formatear_mensaje_telegram(datos_edicion: Dict[str, Any]) -> str:
     nombres = datos_edicion.get("nombres_propios", [])
 
     msg = [
-        f"🚨 *ALERTA TERMÓMETRO DIGITAL PBA — Edición #{edicion_id}*",
+        f"🚨 *ALERTA TERMÓMETRO DIGITAL PBA — {edicion_label}*",
         "📍 *Cobertura:* 135 Municipios Bonaerenses",
         f"📊 *Hallazgos:* {hallazgos} ({nuevos} nuevos)",
         ""
@@ -43,8 +56,7 @@ def formatear_mensaje_telegram(datos_edicion: Dict[str, Any]) -> str:
         msg.append("📡 *VISTA PREVIA DE RECLAMOS VECINALES PBA:*")
         for h in hallazgos_destacados[:3]:
             p = h.get("partido", "PBA")
-            txt = (h.get("texto") or "").replace("\n", " ").strip()
-            txt_corto = txt[:120] + ("..." if len(txt) > 120 else "")
+            txt_corto = recortar_telegram(h.get("texto") or h.get("titulo") or "")
             autor = h.get("autor", "Vecinos")
             msg.append(f"• *[{p}]* {autor}: _{txt_corto}_")
         msg.append("")

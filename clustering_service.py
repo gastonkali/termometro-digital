@@ -5,6 +5,7 @@ Permite consolidar múltiples fuentes sobre el mismo hecho (ej: Sarandí, Quilme
 el corte de Autopista Bs. As.–La Plata por falta de luz) en 1 sola tarjeta con conteo de fuentes.
 """
 
+import json
 import re
 from typing import Any, Dict, List, Tuple
 from collections import Counter
@@ -153,18 +154,47 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
         titulo_cluster = tema_i or rep.get("titulo", "Reclamo vecinal reportado")
         if "corte" in titulo_cluster.lower() and "autopista" in titulo_cluster.lower() and "luz" in titulo_cluster.lower():
             titulo_cluster = "Corte de Autopista Bs. As.–La Plata por falta de luz (Edesur)"
-        elif "tornquist" in comb_total and "puestos de trabajo" in comb_total:
-            titulo_cluster = "Pueblada en defensa de los puestos de trabajo, con acompañamiento de la CTA Provincia de Buenos Aires."
+        else:
+            if ":" in titulo_cluster and not titulo_cluster.startswith("http"):
+                partes_t = titulo_cluster.split(":", 1)
+                if len(partes_t[0]) < 30 and len(partes_t[1].strip()) > 10:
+                    titulo_cluster = partes_t[1].strip()
+            if len(titulo_cluster) > 130:
+                titulo_cluster = titulo_cluster[:130].rsplit(" ", 1)[0] + "..."
 
-        reaccion = "Sin comentarios vecinales registrados."
-        if "cacerolazo" in comb_total or "corte de calle" in comb_total:
+        # Reacción dinámica basada en comentarios reales de vecinos
+        todos_comentarios = []
+        for it in items_cluster:
+            c_list = it.get("comentarios") or it.get("comentarios_json") or []
+            if isinstance(c_list, str):
+                try:
+                    c_list = json.loads(c_list)
+                except Exception:
+                    c_list = []
+            if isinstance(c_list, list):
+                todos_comentarios.extend(c_list)
+
+        if todos_comentarios:
+            c_primer = str(todos_comentarios[0]).strip()
+            if " - · - " in c_primer:
+                c_texto = c_primer.split(" - · - ")[-1].strip()
+            elif ":" in c_primer:
+                c_texto = c_primer.split(":", 1)[-1].strip()
+            else:
+                c_texto = c_primer
+            if len(c_texto) > 110:
+                c_texto = c_texto[:110].rsplit(" ", 1)[0] + "..."
+            reaccion = f"Vecinos comentan: “{c_texto}”"
+        elif "cacerolazo" in comb_total or "corte de calle" in comb_total:
             reaccion = "Vecinos cortaron la traza y convocan a un cacerolazo masivo."
-        elif "tornquist" in comb_total:
-            reaccion = "Lectura electoral de la participación gremial; pedido de que la energía se destine a instituciones locales."
+        elif "marcha" in comb_total or "reclamo" in comb_total:
+            reaccion = "Vecinos y familiares se movilizan en reclamo activo."
         elif "cuestiona al gobernador" in comb_total or "baño de sangre" in comb_total:
-            reaccion = "Sin comentarios de vecinos (solo del propio autor)."
-        elif "marcha" in comb_total:
-            reaccion = "Familiares y vecinos se movilizan frente a la comisaría."
+            reaccion = "Reclamos directos de usuarios en redes sociales."
+        elif any(it.get("es_convocatoria") for it in items_cluster):
+            reaccion = "Convocatoria vecinal activa con fecha y punto de encuentro."
+        else:
+            reaccion = "Sin comentarios vecinales adicionales registrados."
 
         mods_unificados = set()
         for it in items_cluster:
