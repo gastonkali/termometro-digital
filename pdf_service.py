@@ -300,9 +300,29 @@ def generar_html_reporte(edicion_id: int) -> str:
     # Bloque 4: Hallazgos Destacados
     html += '<div class="section-title">📡 Hallazgos Recientes Destacados en PBA</div>'
     for h in hallazgos[:15]:
-        texto_limpio = (h['texto'] or "").strip()
-        if len(texto_limpio) > 350:
-            texto_limpio = texto_limpio[:350] + "..."
+        texto_raw = (h['texto'] or "").strip()
+        partes = texto_raw.split("💬 Comentarios destacados de vecinos:")
+        texto_principal = partes[0].strip()
+        if len(texto_principal) > 350:
+            texto_principal = texto_principal[:350] + "..."
+
+        bloque_comentarios = ""
+        if len(partes) > 1 and partes[1].strip():
+            comentarios_html = ""
+            for c in partes[1].strip().split("\n"):
+                c_limpio = c.lstrip("• ").strip()
+                if c_limpio:
+                    comentarios_html += f"<li><em>{c_limpio}</em></li>"
+            if comentarios_html:
+                bloque_comentarios = f"""
+                <div style="margin-top: 8px; border-top: 1px dashed #cbd5e1; padding-top: 6px;">
+                  <strong style="font-size: 8pt; color: #0284c7;">💬 Comentarios destacados de vecinos:</strong>
+                  <ul style="margin: 3px 0; padding-left: 16px; font-size: 8.5pt; color: #334155;">
+                    {comentarios_html}
+                  </ul>
+                </div>
+                """
+
         html += f"""
         <div class="item-card">
           <div style="margin-bottom: 6px;">
@@ -313,7 +333,8 @@ def generar_html_reporte(edicion_id: int) -> str:
           <div class="item-title">{h['titulo']}</div>
           <div class="preview-box">
             <div class="preview-title">Vista previa de la publicación:</div>
-            <p class="preview-text">"{texto_limpio}"</p>
+            <p class="preview-text">"{texto_principal}"</p>
+            {bloque_comentarios}
           </div>
           <div class="item-meta">
             <span>👤 <strong>Autor:</strong> {h['autor']}</span> • 

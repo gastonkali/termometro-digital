@@ -52,10 +52,88 @@ def lanzar_navegador_sesion(headless: bool = False):
     return p, context
 
 
+import re
+import urllib.parse
+
+
+def limpiar_url_fb(href: str) -> str:
+    """
+    Limpia y normaliza URLs de Facebook para que lleven directamente
+    al posteo, foto, video o perfil del autor sin parámetros de búsqueda generales.
+    """
+    if not href or "/search/" in href:
+        return ""
+    # Si es enlace a foto con fbid
+    if "/photo/" in href and "fbid=" in href:
+        m = re.search(r"fbid=([0-9]+)", href)
+        if m:
+            return f"https://www.facebook.com/photo/?fbid={m.group(1)}"
+    # Si es perfil por id
+    if "profile.php" in href and "id=" in href:
+        m = re.search(r"id=([0-9]+)", href)
+        if m:
+            return f"https://www.facebook.com/profile.php?id={m.group(1)}"
+    # Si es permalink de post o grupo
+    if "/posts/" in href or "/permalink/" in href or "/stories/" in href:
+        return href.split("?")[0]
+    if "/groups/" in href:
+        return href.split("?")[0]
+    # Si es perfil de página o usuario
+    if href.startswith("https://www.facebook.com/"):
+        slug = href.replace("https://www.facebook.com/", "").split("?")[0].strip("/")
+        if slug and slug not in ["search", "home.php", "login", "watch", "messages"]:
+            return f"https://www.facebook.com/{slug}"
+    return href.split("?")[0] if href else ""
+
+
+def extraer_comentarios_facebook(context, post_url: str, max_comentarios: int = 3) -> List[str]:
+    """
+    Abre la URL directa del posteo en una pestaña en segundo plano y extrae
+    los comentarios reales de los vecinos.
+    """
+    if not post_url or "facebook.com/search/" in post_url:
+        return []
+    if not any(k in post_url for k in ["/photo/", "/posts/", "/permalink/", "fbid=", "/groups/"]):
+        return []
+
+    comentarios = []
+    p_tab = None
+    try:
+        p_tab = context.new_page()
+        p_tab.goto(post_url, timeout=18000, wait_until="domcontentloaded")
+        time.sleep(2.5)
+
+        comentarios = p_tab.evaluate("""() => {
+            const out = [];
+            const nodes = document.querySelectorAll('div[role="article"], ul > li div[dir="auto"]');
+            for (const n of nodes) {
+                const txt = (n.innerText || '').trim();
+                if (!txt || txt.length < 8 || txt.length > 350) continue;
+                const lines = txt.split('\\n').map(l => l.trim()).filter(l => l && !['Responder', 'Me gusta', 'Compartir', 'Ver más', 'Ver traducción'].includes(l));
+                if (lines.length > 0) {
+                    const clean = lines.join(' - ');
+                    if (clean.length > 8 && !out.includes(clean)) {
+                        out.push(clean);
+                    }
+                }
+            }
+            return out.slice(0, 3);
+        }""")
+    except Exception:
+        pass
+    finally:
+        if p_tab:
+            try:
+                p_tab.close()
+            except Exception:
+                pass
+    return comentarios
+
+
 def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> List[Dict[str, Any]]:
     """
     Navega a la URL de búsqueda de Facebook, hace scroll y extrae
-    texto real de publicaciones y comentarios vecinales.
+    texto real de publicaciones, enlaces directos y comentarios de vecinos.
     """
     from config_pba import es_exclusion_geografica, es_texto_espanol
 
@@ -82,29 +160,36 @@ def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> Lis
                 if (text.startsWith('Amigos') || text.startsWith('Grupos')) continue;
                 seen.add(text);
 
-                // Buscar autor y enlace más cercano
-                let url = window.location.href;
+                // Buscar autor y enlaces directos en el contenedor
+                let directUrl = '';
                 let autor = "Vecinos en Facebook";
 
-                const card = el.closest('div[role="article"]') || el.parentElement?.parentElement?.parentElement;
-                if (card) {
-                    const authorLink = card.querySelector('h2 a, h3 a, strong a, a[role="link"]');
-                    if (authorLink && authorLink.innerText) {
-                        const aName = authorLink.innerText.trim();
-                        if (aName && aName.length < 50 && !aName.includes('Facebook')) {
-                            autor = aName;
+                let cur = el;
+                for (let i = 0; i < 8 && cur; i++) {
+                    const links = Array.from(cur.querySelectorAll('a[href]'));
+                    for (const a of links) {
+                        const h = a.href;
+                        if (!h || h.includes('/search/')) continue;
+
+                        if (h.includes('/photo/') || h.includes('/posts/') || h.includes('/permalink/') || h.includes('/stories/')) {
+                            if (!directUrl) directUrl = h;
+                        }
+                        if (h.includes('/groups/') && !directUrl) {
+                            directUrl = h;
+                        }
+                        const authorText = (a.innerText || '').trim();
+                        if (authorText && authorText.length < 50 && !authorText.includes('Facebook') && !authorText.includes('foto')) {
+                            if (autor === "Vecinos en Facebook") autor = authorText;
+                            if (!directUrl && !h.includes('/search/')) directUrl = h;
                         }
                     }
-                    const aPost = card.querySelector('a[href*="/posts/"], a[href*="/permalink/"], a[href*="/groups/"]');
-                    if (aPost && aPost.href) {
-                        url = aPost.href;
-                    }
+                    cur = cur.parentElement;
                 }
 
                 results.push({
                     autor: autor,
                     texto: text,
-                    url: url
+                    url: directUrl
                 });
             }
             return results;
@@ -121,13 +206,29 @@ def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> Lis
 
             autor = item.get("autor") or "Vecinos en Facebook"
             primer_renglon = txt.split("\n")[0][:75].strip()
+            url_final = limpiar_url_fb(item.get("url"))
+
+            # Extraer comentarios reales si hay URL directa de post/foto
+            comentarios = []
+            if url_final and any(k in url_final for k in ["/photo/", "/posts/", "/permalink/", "fbid="]):
+                print(f"  💬 Extrayendo comentarios de vecinos para: {autor}...")
+                comentarios = extraer_comentarios_facebook(page.context, url_final, max_comentarios=3)
+
+            texto_con_comentarios = txt
+            if comentarios:
+                texto_con_comentarios += "\n\n💬 Comentarios destacados de vecinos:\n" + "\n".join(f"• {c}" for c in comentarios)
+
+            # Si no hay URL directa, usar perfil del autor o grupo directo
+            if not url_final:
+                url_final = f"https://www.facebook.com/search/posts?q={urllib.parse.quote(autor)}"
 
             posteos.append({
                 "fuente": "Facebook (Sesión Abierta)",
                 "autor": autor,
-                "url": item.get("url") or page.url,
+                "url": url_final,
                 "titulo": f"{autor}: {primer_renglon}",
-                "texto": txt,
+                "texto": texto_con_comentarios,
+                "comentarios": comentarios,
                 "fecha_publicacion": "Detectado en vivo con mi sesión"
             })
             if len(posteos) >= max_items:
