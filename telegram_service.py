@@ -50,7 +50,7 @@ def formatear_mensaje_telegram(datos_edicion: Dict[str, Any]) -> str:
         msg.append("")
 
     if nombres:
-        msg.append(f"📌 *NOMBRES PROPIOS DEL DÍA ({len(nombres)}):*")
+        msg.append(f"👤 *FIGURAS PÚBLICAS / PERSONAS MENCIONADAS POR LOS VECINOS ({len(nombres)}):*")
         for n in nombres[:4]:
             msg.append(f"• {n}")
         msg.append("")
@@ -89,6 +89,13 @@ def enviar_alerta_telegram(
             "text": texto,
             "parse_mode": "Markdown"
         }, timeout=15)
+        if resp.status_code != 200:
+            # Fallback limpio sin formato si algún caracter de los posteos rompió Markdown
+            texto_plano = texto.replace("*", "").replace("_", "").replace("`", "")
+            resp = requests.post(url_msg, data={
+                "chat_id": cid,
+                "text": texto_plano
+            }, timeout=15)
         resultado["texto_enviado"] = (resp.status_code == 200)
     except Exception as e:
         resultado["error_texto"] = str(e)

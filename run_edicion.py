@@ -73,8 +73,8 @@ def generar_reporte_markdown(edicion_id: int) -> str:
         lineas.append("- _Sin convocatorias nuevas en este corte._")
     lineas.append("")
 
-    # 2. Nombres Propios del Día vigentes
-    lineas.append(f"## 📌 Nombres Propios del Día en Seguimiento ({len(nombres)})")
+    # 2. Figuras públicas / personas mencionadas por los vecinos
+    lineas.append(f"## 👤 Figuras públicas / personas mencionadas por los vecinos ({len(nombres)})")
     if nombres:
         for n in nombres:
             lineas.append(

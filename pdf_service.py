@@ -255,7 +255,7 @@ def generar_html_reporte(edicion_id: int) -> str:
     </div>
     <div class="kpi-card" style="border-left: 3px solid #3b82f6;">
       <div class="kpi-val" style="color: #2563eb;">{len(nombres)}</div>
-      <div class="kpi-lbl">Nombres Propios</div>
+      <div class="kpi-lbl">Figuras / Personas</div>
     </div>
   </div>
 """
@@ -281,12 +281,16 @@ def generar_html_reporte(edicion_id: int) -> str:
     else:
         html += '<p style="color: #64748b; font-size: 9pt;">No se detectaron nuevas convocatorias con fecha u horario en este corte.</p>'
 
-    # Bloque 2: Nombres Propios del Día vigentes
+    # Bloque 2: Figuras públicas / personas mencionadas por los vecinos
     if nombres:
-        html += '<div class="section-title">📌 Nombres Propios del Día en Seguimiento</div>'
+        html += '<div class="section-title">👤 Figuras públicas / personas mencionadas por los vecinos</div>'
         html += '<ul style="font-size: 9.5pt; color: #334155; padding-left: 18px; margin: 6px 0;">'
         for n in nombres[:10]:
-            html += f"<li><strong>{n['nombre']}</strong> ({n['tipo']} — 📍 {n['partido']}): {n['apariciones']} menciones. <em>{n['contexto']}</em></li>"
+            nombre_limpio = (n['nombre'] or "").strip('"“”\'')
+            if len(nombre_limpio) > 28 or " se mueve " in nombre_limpio.lower() or not nombre_limpio:
+                continue
+            tipo_label = "Figura / Persona" if "Entidad" in n['tipo'] else n['tipo']
+            html += f"<li><strong>{nombre_limpio}</strong> ({tipo_label} — 📍 {n['partido']}): {n['apariciones']} menciones. <em>{n['contexto']}</em></li>"
         html += "</ul>"
 
     # Bloque 3: Propuestas de Palabras Nuevas
