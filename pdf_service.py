@@ -9,7 +9,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from database import get_conn
@@ -49,21 +49,46 @@ def encontrar_ejecutable_navegador() -> Optional[str]:
     return None
 
 
-def generar_html_reporte(edicion_id: int) -> str:
+def generar_html_reporte(
+    edicion_id: Optional[int] = None,
+    horas_atras: Optional[int] = None,
+    titulo_custom: Optional[str] = None
+) -> str:
     conn = get_conn()
-    edicion = conn.execute("SELECT * FROM ediciones WHERE id = ?", (edicion_id,)).fetchone()
-    hallazgos = conn.execute(
-        """
-        SELECT * FROM hallazgos
-        WHERE edicion_id = ? AND descartado = 0
-        ORDER BY es_convocatoria DESC, relevancia DESC, id DESC
-        """,
-        (edicion_id,),
-    ).fetchall()
-    if not hallazgos:
+    if horas_atras:
+        corte_iso = (datetime.now() - timedelta(hours=horas_atras)).isoformat(timespec="seconds")
         hallazgos = conn.execute(
-            "SELECT * FROM hallazgos WHERE descartado = 0 ORDER BY es_convocatoria DESC, id DESC LIMIT 40"
+            """
+            SELECT * FROM hallazgos
+            WHERE fecha_deteccion >= ? AND descartado = 0
+            ORDER BY es_convocatoria DESC, relevancia DESC, id DESC
+            """,
+            (corte_iso,),
         ).fetchall()
+        if not hallazgos:
+            hallazgos = conn.execute(
+                "SELECT * FROM hallazgos WHERE descartado = 0 ORDER BY es_convocatoria DESC, id DESC LIMIT 50"
+            ).fetchall()
+        edicion_str = f"Consolidado {horas_atras}hs"
+        titulo_display = titulo_custom or f"🌅 Termómetro Digital PBA — Reporte Matutino (Últimas {horas_atras}hs)"
+        subtitulo_display = f"Resumen consolidado de las últimas {horas_atras} horas • 135 Municipios Bonaerenses"
+    else:
+        edicion = conn.execute("SELECT * FROM ediciones WHERE id = ?", (edicion_id,)).fetchone()
+        hallazgos = conn.execute(
+            """
+            SELECT * FROM hallazgos
+            WHERE edicion_id = ? AND descartado = 0
+            ORDER BY es_convocatoria DESC, relevancia DESC, id DESC
+            """,
+            (edicion_id,),
+        ).fetchall()
+        if not hallazgos:
+            hallazgos = conn.execute(
+                "SELECT * FROM hallazgos WHERE descartado = 0 ORDER BY es_convocatoria DESC, id DESC LIMIT 40"
+            ).fetchall()
+        edicion_str = f"#{edicion_id or 1}"
+        titulo_display = titulo_custom or "🌡️ Termómetro Digital PBA — Reporte de Alertas"
+        subtitulo_display = "Monitoreo de Redes Sociales (Facebook, X/Twitter, Instagram, Google) • 135 Partidos PBA"
 
     nombres = conn.execute("SELECT * FROM nombres_propios WHERE vigente = 1 ORDER BY apariciones DESC").fetchall()
     propuestas = conn.execute("SELECT * FROM palabras_candidatas WHERE estado = 'propuesta'").fetchall()
@@ -234,9 +259,9 @@ def generar_html_reporte(edicion_id: int) -> str:
 </head>
 <body>
   <div class="header">
-    <div class="title">🌡️ Termómetro Digital PBA — Reporte de Alertas</div>
-    <div class="subtitle">Monitoreo de Redes Sociales (Facebook, X/Twitter, Instagram, Google) • 135 Partidos PBA</div>
-    <div class="subtitle"><strong>Fecha:</strong> {fecha_hora} | <strong>Edición:</strong> #{edicion_id}</div>
+    <div class="title">{titulo_display}</div>
+    <div class="subtitle">{subtitulo_display}</div>
+    <div class="subtitle"><strong>Fecha:</strong> {fecha_hora} | <strong>Corte:</strong> {edicion_str}</div>
   </div>
 
   <div class="kpi-row">
@@ -424,6 +449,26 @@ def crear_reporte_pdf_edicion(edicion_id: int) -> Optional[str]:
 
     if compilar_pdf_desde_html(html, pdf_path):
         # Copiar también a la ruta Latest
+        try:
+            import shutil
+            shutil.copyfile(pdf_path, pdf_path_latest)
+        except Exception:
+            pass
+        return pdf_path
+    return None
+
+
+def crear_reporte_pdf_ultimas_horas(horas_atras: int = 12) -> Optional[str]:
+    """Genera el PDF consolidado de las últimas N horas (ej. matutino de 12 horas)."""
+    html = generar_html_reporte(
+        horas_atras=horas_atras,
+        titulo_custom=f"🌅 Termómetro Digital PBA — Reporte Matutino (Últimas {horas_atras}hs)"
+    )
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    pdf_path = os.path.join(PDF_OUTPUT_DIR, f"Alerta_Termometro_PBA_Matutino_12hs_{timestamp}.pdf")
+    pdf_path_latest = os.path.join(PDF_OUTPUT_DIR, "Alerta_Termometro_PBA_Matutino_Ultimo.pdf")
+
+    if compilar_pdf_desde_html(html, pdf_path):
         try:
             import shutil
             shutil.copyfile(pdf_path, pdf_path_latest)
