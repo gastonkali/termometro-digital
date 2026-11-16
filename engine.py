@@ -559,6 +559,22 @@ def generar_matriz_consultas_multired(
     return consultas
 
 
+def limpiar_contexto_nombre(texto: str, max_chars: int = 280) -> str:
+    if not texto:
+        return ""
+    limpio = " ".join(texto.replace("\n", " ").split()).strip()
+    if len(limpio) <= max_chars:
+        return limpio
+    recorte = limpio[:max_chars]
+    pos = recorte.rfind(". ")
+    if pos > 60:
+        return recorte[:pos + 1].strip()
+    pos_espacio = recorte.rfind(" ")
+    if pos_espacio > 60:
+        return recorte[:pos_espacio].strip() + "..."
+    return recorte.strip() + "..."
+
+
 def ejecutar_barrido(
     modo: str = "automatico",
     partidos_filtro: Optional[List[str]] = None,
@@ -636,7 +652,7 @@ def ejecutar_barrido(
                     tipo=tipo_np,
                     partido=info["partido"],
                     categoria_origen=info["categoria"],
-                    contexto=r.get("titulo", "")[:140],
+                    contexto=limpiar_contexto_nombre(r.get("titulo", "")),
                     edicion_id=edicion_id,
                 )
 
@@ -735,7 +751,7 @@ def ingerir_posteos_directos_facebook(
                 tipo=tipo_np,
                 partido=info["partido"],
                 categoria_origen=info["categoria"],
-                contexto=texto[:140],
+                contexto=limpiar_contexto_nombre(texto),
                 edicion_id=edicion_id,
             )
 
