@@ -488,9 +488,387 @@ def extraer_posteos_twitter(page, url_busqueda: str, max_items: int = 8) -> List
     return tweets
 
 
+def extraer_posteos_facebook_grupos(page, max_items: int = 8) -> List[Dict[str, Any]]:
+    """
+    Navega al feed consolidado de grupos y a grupos miembros del usuario en Facebook,
+    extrayendo reclamos, incidentes, imágenes y comentarios de vecinos.
+    """
+    from config_pba import es_exclusion_geografica, es_texto_espanol
+    from engine import detectar_partido_en_texto
+
+    posteos = []
+    urls_grupos = [
+        "https://www.facebook.com/groups/feed/",
+        "https://www.facebook.com/groups/policialesbahiaok/",
+        "https://www.facebook.com/groups/sanvicenteconectado/",
+        "https://www.facebook.com/groups/990924476974016/",
+        "https://www.facebook.com/groups/260758975428433/",
+    ]
+
+    for g_url in urls_grupos:
+        if len(posteos) >= max_items:
+            break
+        try:
+            print(f"  👥 Explorando grupos del usuario: {g_url}...")
+            page.goto(g_url, timeout=30000, wait_until="domcontentloaded")
+            time.sleep(3)
+            for _ in range(2):
+                page.mouse.wheel(0, 1500)
+                time.sleep(1)
+
+            try:
+                page.evaluate(r"""() => {
+                    document.querySelectorAll('div[role="button"], span[role="button"]').forEach(b => {
+                        if ((b.innerText || '').includes('Ver más')) { try { b.click(); } catch(e){} }
+                    });
+                }""")
+            except Exception:
+                pass
+
+            items = page.evaluate(r"""() => {
+                const feed = document.querySelector('div[role="feed"]') || document.querySelector('div[role="main"]');
+                const cards = feed ? Array.from(feed.children) : [];
+                const out = [];
+                for (const card of cards) {
+                    const rawLines = (card.innerText || '').split('\n').map(l => l.replace(/Ver más/gi, '').trim()).filter(l => {
+                        if (!l || l.length < 3 || l === 'Facebook' || l === '·' || l === 'Seguir' || l === 'Unirte') return false;
+                        if (l.includes('Publicación compartida') || l.includes('Contenido sensible') || l.includes('Puede ser una imagen')) return false;
+                        if (/^\d+$/.test(l)) return false;
+                        if (l.length < 15 && l.includes('\u034f')) return false;
+                        return true;
+                    });
+                    if (rawLines.length === 0) continue;
+                    const autor = rawLines[0];
+                    const bodyLines = rawLines.slice(1).filter(l => l.length > 5 && !l.includes('de 202'));
+                    const texto = bodyLines.join('\n');
+                    if (texto.length < 25) continue;
+
+                    let imgUrl = '';
+                    for (const im of Array.from(card.querySelectorAll('img'))) {
+                        const s = im.src || '';
+                        if (s && (s.includes('scontent') || s.includes('external.') || s.includes('fbcdn.net')) && !s.includes('emoji') && !s.includes('rsrc')) {
+                            const w = im.naturalWidth || im.width || 0;
+                            if (w > 120 || !w) { imgUrl = s; break; }
+                        }
+                    }
+
+                    let directUrl = '';
+                    for (const a of Array.from(card.querySelectorAll('a[href]'))) {
+                        const h = a.href || '';
+                        if (h.includes('/posts/') || h.includes('/permalink/') || h.includes('/photo/') || h.includes('fbid=')) {
+                            directUrl = h;
+                            break;
+                        }
+                    }
+                    out.push({ autor, texto, imgUrl, directUrl });
+                }
+                return out;
+            }""")
+
+            for it in items:
+                txt = it.get("texto", "").strip()
+                if not txt or len(txt) < 30 or not es_texto_espanol(txt) or es_exclusion_geografica(txt):
+                    continue
+
+                autor = it.get("autor") or "Vecino en Grupo FB"
+                url_fin = limpiar_url_fb(it.get("directUrl")) or g_url
+                partido_det = detectar_partido_en_texto(f"{autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
+
+                comentarios = []
+                if url_fin and any(k in url_fin for k in ["/photo/", "/posts/", "/permalink/", "fbid="]):
+                    comentarios = extraer_comentarios_facebook(page.context, url_fin, max_comentarios=3)
+
+                texto_full = txt
+                if comentarios:
+                    texto_full += "\n\n💬 Comentarios destacados de vecinos:\n" + "\n".join(f"• {c}" for c in comentarios)
+
+                primer_renglon = txt.split("\n")[0][:75].strip()
+                posteos.append({
+                    "fuente": f"Facebook (Grupo: {autor[:30]})",
+                    "autor": autor,
+                    "url": url_fin,
+                    "titulo": f"{autor}: {primer_renglon}",
+                    "texto": texto_full,
+                    "comentarios": comentarios,
+                    "imagen_url": it.get("imgUrl", ""),
+                    "partido": partido_det,
+                    "categoria": "seguridad",
+                    "pasada": "grupos_vecinales",
+                    "fecha_publicacion": "En vivo desde mis grupos"
+                })
+                if len(posteos) >= max_items:
+                    break
+
+        except Exception as e:
+            print(f"  [Aviso Grupos FB]: {e}")
+
+    return posteos
+
+
+def extraer_posteos_facebook_amigos(page, max_items: int = 5) -> List[Dict[str, Any]]:
+    """
+    Navega al feed de inicio (publicaciones de amigos y seguidos del usuario)
+    y extrae posteos locales de PBA.
+    """
+    from config_pba import es_exclusion_geografica, es_texto_espanol
+    from engine import detectar_partido_en_texto
+
+    posteos = []
+    try:
+        print("  👤 Explorando feed de inicio y publicaciones de amigos en Facebook...")
+        page.goto("https://www.facebook.com/", timeout=30000, wait_until="domcontentloaded")
+        time.sleep(3.5)
+        for _ in range(3):
+            page.mouse.wheel(0, 1500)
+            time.sleep(1.2)
+
+        items = page.evaluate(r"""() => {
+            const feed = document.querySelector('div[role="feed"]') || document.querySelector('div[role="main"]');
+            const cards = feed ? Array.from(feed.children) : [];
+            const out = [];
+            for (const card of cards) {
+                const rawLines = (card.innerText || '').split('\n').map(l => l.replace(/Ver más/gi, '').trim()).filter(l => {
+                    if (!l || l.length < 3 || l === 'Facebook' || l === '·' || l === 'Seguir' || l === 'Unirte') return false;
+                    if (l.includes('Publicación compartida') || l.includes('Contenido sensible') || l.includes('Puede ser una imagen')) return false;
+                    if (/^\d+$/.test(l)) return false;
+                    if (l.length < 15 && l.includes('\u034f')) return false;
+                    return true;
+                });
+                if (rawLines.length === 0) continue;
+                const autor = rawLines[0];
+                const bodyLines = rawLines.slice(1).filter(l => l.length > 5 && !l.includes('de 202'));
+                const texto = bodyLines.join('\n');
+                if (texto.length < 25) continue;
+
+                let imgUrl = '';
+                for (const im of Array.from(card.querySelectorAll('img'))) {
+                    const s = im.src || '';
+                    if (s && (s.includes('scontent') || s.includes('external.') || s.includes('fbcdn.net')) && !s.includes('emoji')) {
+                        const w = im.naturalWidth || im.width || 0;
+                        if (w > 120 || !w) { imgUrl = s; break; }
+                    }
+                }
+
+                let directUrl = '';
+                for (const a of Array.from(card.querySelectorAll('a[href]'))) {
+                    const h = a.href || '';
+                    if (h.includes('/posts/') || h.includes('/permalink/') || h.includes('/photo/') || h.includes('fbid=')) {
+                        directUrl = h;
+                        break;
+                    }
+                }
+                out.push({ autor, texto, imgUrl, directUrl });
+            }
+            return out;
+        }""")
+
+        for it in items:
+            txt = it.get("texto", "").strip()
+            if not txt or len(txt) < 30 or not es_texto_espanol(txt) or es_exclusion_geografica(txt):
+                continue
+
+            autor = it.get("autor") or "Contacto en Facebook"
+            url_fin = limpiar_url_fb(it.get("directUrl")) or "https://www.facebook.com"
+            partido_det = detectar_partido_en_texto(f"{autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
+
+            comentarios = []
+            if url_fin and any(k in url_fin for k in ["/photo/", "/posts/", "/permalink/", "fbid="]):
+                comentarios = extraer_comentarios_facebook(page.context, url_fin, max_comentarios=3)
+
+            texto_full = txt
+            if comentarios:
+                texto_full += "\n\n💬 Comentarios destacados de vecinos:\n" + "\n".join(f"• {c}" for c in comentarios)
+
+            primer_renglon = txt.split("\n")[0][:75].strip()
+            posteos.append({
+                "fuente": "Facebook (Amigos / Contactos)",
+                "autor": autor,
+                "url": url_fin,
+                "titulo": f"{autor}: {primer_renglon}",
+                "texto": texto_full,
+                "comentarios": comentarios,
+                "imagen_url": it.get("imgUrl", ""),
+                "partido": partido_det,
+                "categoria": "sociales_servicios",
+                "pasada": "feed_amigos",
+                "fecha_publicacion": "Feed de amigos en vivo"
+            })
+            if len(posteos) >= max_items:
+                break
+
+    except Exception as e:
+        print(f"  [Aviso Feed Amigos FB]: {e}")
+
+    return posteos
+
+
+def extraer_posteos_instagram(page, max_items: int = 6) -> List[Dict[str, Any]]:
+    """
+    Navega a Instagram con tu sesión abierta:
+    1. Revisa el feed de seguidos/amigos (https://www.instagram.com/).
+    2. Revisa hashtags locales de PBA (policiabonaerense, vecinosbuenosaires, inseguridadbuenosaires).
+    """
+    from config_pba import es_exclusion_geografica, es_texto_espanol
+    from engine import detectar_partido_en_texto
+
+    posteos = []
+    urls_ig = [
+        ("https://www.instagram.com/", "feed_amigos"),
+        ("https://www.instagram.com/explore/tags/policiabonaerense/", "hashtag_seguridad"),
+        ("https://www.instagram.com/explore/tags/inseguridadbuenosaires/", "hashtag_seguridad"),
+        ("https://www.instagram.com/explore/tags/vecinosbuenosaires/", "hashtag_vecinal"),
+    ]
+
+    for ig_url, tipo_origen in urls_ig:
+        if len(posteos) >= max_items:
+            break
+        try:
+            print(f"  📸 Explorando Instagram ({tipo_origen}): {ig_url}...")
+            page.goto(ig_url, timeout=30000, wait_until="domcontentloaded")
+            time.sleep(3.5)
+            for _ in range(2):
+                page.mouse.wheel(0, 1000)
+                time.sleep(1)
+
+            if tipo_origen == "feed_amigos":
+                items_feed = page.evaluate(r"""() => {
+                    const arts = document.querySelectorAll('article');
+                    const out = [];
+                    for (const a of arts) {
+                        let autor = '';
+                        const authorLinks = a.querySelectorAll('header a, div[role="button"] a');
+                        for (const l of authorLinks) {
+                            const txt = (l.innerText || '').trim();
+                            if (txt && !txt.includes('Follow') && !txt.includes('Seguir') && !txt.includes('•')) {
+                                autor = txt;
+                                break;
+                            }
+                        }
+                        let imgUrl = '';
+                        const imgs = Array.from(a.querySelectorAll('img'));
+                        for (const im of imgs) {
+                            const s = im.src || '';
+                            if (s && (s.includes('cdninstagram.com') || s.includes('fbcdn.net')) && !s.includes('emoji')) {
+                                const w = im.naturalWidth || im.width || 0;
+                                if (w > 120 || !w) { imgUrl = s; break; }
+                            }
+                        }
+                        let postUrl = '';
+                        const links = Array.from(a.querySelectorAll('a[href]'));
+                        for (const l of links) {
+                            const h = l.href || '';
+                            if (h.includes('/p/') || h.includes('/reel/')) {
+                                postUrl = h.split('?')[0];
+                                break;
+                            }
+                        }
+                        const text = (a.innerText || '').trim();
+                        if (text.length > 25) {
+                            out.push({ autor: autor || 'Instagram', url: postUrl, imgUrl: imgUrl, texto: text });
+                        }
+                        if (out.length >= 3) break;
+                    }
+                    return out;
+                }""")
+                for it in items_feed:
+                    txt = it.get("texto", "").strip()
+                    if not txt or len(txt) < 25 or not es_texto_espanol(txt) or es_exclusion_geografica(txt):
+                        continue
+                    autor = it.get("autor", "Contacto en Instagram")
+                    partido_det = detectar_partido_en_texto(f"{autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
+                    primer_renglon = txt.split("\n")[0][:75].strip()
+                    posteos.append({
+                        "fuente": "Instagram (Seguidos / Amigos)",
+                        "autor": autor,
+                        "url": it.get("url") or "https://www.instagram.com/",
+                        "titulo": f"{autor}: {primer_renglon}",
+                        "texto": txt,
+                        "comentarios": [],
+                        "imagen_url": it.get("imgUrl", ""),
+                        "partido": partido_det,
+                        "categoria": "seguridad",
+                        "pasada": "instagram_amigos",
+                        "fecha_publicacion": "Feed de Instagram en vivo"
+                    })
+                    if len(posteos) >= max_items:
+                        break
+
+            else:
+                post_links = page.evaluate(r"""() => {
+                    return Array.from(document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]'))
+                        .map(a => a.href.split('?')[0])
+                        .slice(0, 3);
+                }""")
+                for plink in post_links:
+                    if len(posteos) >= max_items:
+                        break
+                    try:
+                        p_tab = page.context.new_page()
+                        p_tab.goto(plink, timeout=20000, wait_until="domcontentloaded")
+                        time.sleep(2.5)
+                        det = p_tab.evaluate(r"""() => {
+                            let autor = '';
+                            const a_el = document.querySelector('header a, h2 a');
+                            if (a_el) autor = (a_el.innerText || '').trim();
+                            let texto = '';
+                            const h1 = document.querySelector('h1, div[role="button"] span');
+                            if (h1) texto = (h1.innerText || '').trim();
+                            if (!texto) {
+                                const spans = Array.from(document.querySelectorAll('article span'));
+                                for (const sp of spans) {
+                                    const t = (sp.innerText || '').trim();
+                                    if (t.length > 30) { texto = t; break; }
+                                }
+                            }
+                            if (!texto) texto = document.body.innerText.slice(0, 400).replace(/\n/g, ' ');
+                            let imgUrl = '';
+                            const imgs = Array.from(document.querySelectorAll('article img, div[role="dialog"] img'));
+                            for (const im of imgs) {
+                                const s = im.src || '';
+                                if (s && (s.includes('cdninstagram.com') || s.includes('fbcdn.net')) && !s.includes('emoji')) {
+                                    const w = im.naturalWidth || im.width || 0;
+                                    if (w > 120 || !w) { imgUrl = s; break; }
+                                }
+                            }
+                            return { autor, texto, imgUrl };
+                        }""")
+                        p_tab.close()
+
+                        txt_ig = det.get("texto", "").strip()
+                        if not txt_ig or len(txt_ig) < 25 or not es_texto_espanol(txt_ig) or es_exclusion_geografica(txt_ig):
+                            continue
+                        autor_ig = det.get("autor") or "Instagram PBA"
+                        partido_det = detectar_partido_en_texto(f"{autor_ig} {txt_ig}", partido_por_defecto="Provincia de Buenos Aires")
+                        primer_renglon = txt_ig.split("\n")[0][:75].strip()
+                        posteos.append({
+                            "fuente": "Instagram (Hashtags PBA)",
+                            "autor": autor_ig,
+                            "url": plink,
+                            "titulo": f"{autor_ig}: {primer_renglon}",
+                            "texto": txt_ig,
+                            "comentarios": [],
+                            "imagen_url": det.get("imgUrl", ""),
+                            "partido": partido_det,
+                            "categoria": "seguridad",
+                            "pasada": "instagram_hashtags",
+                            "fecha_publicacion": "Hashtags Instagram en vivo"
+                        })
+                    except Exception:
+                        pass
+
+        except Exception as e:
+            print(f"  [Aviso Instagram]: {e}")
+
+    return posteos
+
+
 def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
     """
-    Ejecuta el ciclo de búsquedas en Facebook y X con tu sesión abierta.
+    Ejecuta el ciclo de búsquedas en Facebook, X e Instagram con tu sesión abierta:
+    1. Búsquedas públicas PBA en Facebook y X.
+    2. Feed y grupos de los que sos miembro en Facebook.
+    3. Publicaciones de tus amigos en Facebook.
+    4. Feed de seguidos y hashtags de PBA en Instagram.
     """
     from engine import generar_matriz_consultas_multired
 
@@ -504,9 +882,10 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
     total_recolectados = []
 
     try:
+        # Fase 1: Búsquedas públicas en Facebook y X
         for idx, item in enumerate(matriz, 1):
             print(f"\n[{idx}/{len(matriz)}] Buscando en Facebook: {item['fb_search_query']}...")
-            fb_posts = extraer_posteos_facebook(page, item["fb_url"], max_items=4)
+            fb_posts = extraer_posteos_facebook(page, item["fb_url"], max_items=3)
             for p_item in fb_posts:
                 p_item["partido"] = item["partido"]
                 p_item["pasada"] = item["pasada"]
@@ -515,14 +894,29 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
 
             if item.get("tw_url"):
                 print(f"[{idx}/{len(matriz)}] Buscando en X: {item['partido']}...")
-                tw_posts = extraer_posteos_twitter(page, item["tw_url"], max_items=3)
+                tw_posts = extraer_posteos_twitter(page, item["tw_url"], max_items=2)
                 for t_item in tw_posts:
                     t_item["partido"] = item["partido"]
                     t_item["pasada"] = item["pasada"]
                     t_item["categoria"] = item["categoria"]
                 total_recolectados.extend(tw_posts)
 
-            time.sleep(1.5)
+            time.sleep(1.2)
+
+        # Fase 2: Grupos de los que es miembro / sigue en Facebook
+        print("\n👥 Explorando grupos y comunidades de miembros en Facebook...")
+        fb_grupos = extraer_posteos_facebook_grupos(page, max_items=6)
+        total_recolectados.extend(fb_grupos)
+
+        # Fase 3: Feed de amigos y contactos en Facebook
+        print("\n👤 Explorando feed de amigos y contactos en Facebook...")
+        fb_amigos = extraer_posteos_facebook_amigos(page, max_items=4)
+        total_recolectados.extend(fb_amigos)
+
+        # Fase 4: Feed de seguidos y hashtags bonaerenses en Instagram
+        print("\n📸 Explorando feed de seguidos y hashtags en Instagram...")
+        ig_posts = extraer_posteos_instagram(page, max_items=5)
+        total_recolectados.extend(ig_posts)
 
     finally:
         context.close()
