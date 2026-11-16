@@ -60,29 +60,45 @@ import urllib.parse
 def limpiar_url_fb(href: str) -> str:
     """
     Limpia y normaliza URLs de Facebook para que lleven directamente
-    al posteo, foto, video o perfil del autor sin parámetros de búsqueda generales.
+    al posteo, foto, video, reel o perfil sin parámetros residuales de rastreo.
     """
     if not href or "/search/" in href:
         return ""
-    # Si es enlace a foto con fbid
+    # Si tiene fbid de foto
     if "/photo/" in href and "fbid=" in href:
         m = re.search(r"fbid=([0-9]+)", href)
         if m:
             return f"https://www.facebook.com/photo/?fbid={m.group(1)}"
+    # Si es reel
+    if "/reel/" in href:
+        m = re.search(r"/reel/([0-9]+)", href)
+        if m:
+            return f"https://www.facebook.com/reel/{m.group(1)}/"
+    # Si es permalink de post o grupo
+    if "/posts/" in href or "/permalink/" in href:
+        return href.split("?")[0]
+    # Si es permalink.php con story_fbid
+    if "permalink.php" in href and "story_fbid=" in href:
+        m = re.search(r"story_fbid=([0-9]+)", href)
+        id_m = re.search(r"id=([0-9]+)", href)
+        if m and id_m:
+            return f"https://www.facebook.com/permalink.php?story_fbid={m.group(1)}&id={id_m.group(1)}"
+        elif m:
+            return f"https://www.facebook.com/permalink.php?story_fbid={m.group(1)}"
     # Si es perfil por id
     if "profile.php" in href and "id=" in href:
         m = re.search(r"id=([0-9]+)", href)
         if m:
             return f"https://www.facebook.com/profile.php?id={m.group(1)}"
-    # Si es permalink de post o grupo
-    if "/posts/" in href or "/permalink/" in href or "/stories/" in href:
-        return href.split("?")[0]
+    # Si es grupo directo
     if "/groups/" in href:
-        return href.split("?")[0]
+        m = re.search(r"(https://www\.facebook\.com/groups/[^/?]+)", href)
+        if m:
+            return f"{m.group(1)}/"
     # Si es perfil de página o usuario
     if href.startswith("https://www.facebook.com/"):
         slug = href.replace("https://www.facebook.com/", "").split("?")[0].strip("/")
-        if slug and slug not in ["search", "home.php", "login", "watch", "messages"]:
+        if slug and slug not in ["search", "home.php", "login", "watch", "messages", "groups", "photo", "reel"]:
             return f"https://www.facebook.com/{slug}"
     return href.split("?")[0] if href else ""
 
@@ -140,12 +156,12 @@ def extraer_comentarios_twitter(context, tweet_url: str, max_replies: int = 3) -
 
 def extraer_comentarios_facebook(context, post_url: str, max_comentarios: int = 4) -> List[str]:
     """
-    Abre la URL directa del posteo en una pestaña en segundo plano y extrae
-    los comentarios reales de los vecinos.
+    Abre la URL directa del posteo en una pestaña en segundo plano, despliega
+    los comentarios y extrae las intervenciones reales de vecinos/camaradas.
     """
     if not post_url or "facebook.com/search/" in post_url:
         return []
-    if not any(k in post_url for k in ["/photo/", "/posts/", "/permalink/", "fbid=", "/groups/"]):
+    if not any(k in post_url for k in ["/photo/", "/posts/", "/permalink/", "fbid=", "/groups/", "/reel/"]):
         return []
 
     comentarios = []
@@ -157,19 +173,37 @@ def extraer_comentarios_facebook(context, post_url: str, max_comentarios: int = 
         p_tab.mouse.wheel(0, 500)
         time.sleep(1)
 
+        # Desplegar comentarios si están plegados
+        try:
+            p_tab.evaluate(r"""() => {
+                document.querySelectorAll('div[aria-label*="Comentar la publicación"], div[aria-label*="comentarios"], span[role="button"], div[role="button"]').forEach(b => {
+                    const aria = b.getAttribute('aria-label') || '';
+                    const txt = b.innerText || '';
+                    if (aria.includes('comentarios') || txt.includes('comentarios') || txt.includes('Ver más respuestas') || txt.includes('Ver más comentarios') || txt === 'Ver más') {
+                        try { b.click(); } catch(e){}
+                    }
+                });
+            }""")
+            time.sleep(1.5)
+        except Exception:
+            pass
+
         comentarios = p_tab.evaluate(r"""() => {
             const out = [];
-            const commentNodes = document.querySelectorAll('div[aria-label*="Comentario"], div[aria-label*="Comment"]');
-            const nodes = commentNodes.length > 0 ? commentNodes : document.querySelectorAll('div[role="article"], ul > li div[dir="auto"]');
+            const nodes = document.querySelectorAll('div[aria-label^="Comentario de"], div[aria-label*="Respuesta de"], div[role="article"]');
             for (const n of nodes) {
                 const txt = (n.innerText || '').trim();
-                if (!txt || txt.length < 8 || txt.length > 400) continue;
-                const lines = txt.split('\n').map(l => l.trim()).filter(l => l && !['Responder', 'Me gusta', 'Compartir', 'Ver más', 'Ver traducción'].includes(l));
-                if (lines.length > 0) {
-                    const clean = lines.join(' - ');
-                    if (clean.length > 8 && !out.includes(clean)) {
-                        out.push(clean);
+                if (!txt || txt.length < 8 || txt.length > 400 || txt.includes('ordenar feed') || txt.startsWith('Facebook')) continue;
+                const lines = txt.split('\n').map(l => l.trim()).filter(l => l && !['Responder', 'Me gusta', 'Compartir', 'Ver más', 'Ver traducción', '·', 'Editado'].includes(l));
+                if (lines.length >= 2) {
+                    const cAuthor = lines[0];
+                    const cBody = lines.slice(1).filter(l => !l.includes('sem') && !l.includes('min') && !l.includes('h') && !l.includes('d')).join(' ');
+                    if (cBody.length > 2) {
+                        const clean = `${cAuthor}: "${cBody}"`;
+                        if (!out.includes(clean)) out.push(clean);
                     }
+                } else if (lines.length === 1 && lines[0].length > 10) {
+                    if (!out.includes(lines[0])) out.push(lines[0]);
                 }
             }
             return out.slice(0, 4);
@@ -410,6 +444,20 @@ def extraer_posteos_twitter(page, url_busqueda: str, max_items: int = 8) -> List
         page.goto(url_busqueda, timeout=35000, wait_until="domcontentloaded")
         time.sleep(3)
 
+        # Verificar si X solicita verificación humana o login challenge
+        try:
+            page_content = (page.content() or "").lower()
+            if any(term in page_content for term in ["arkose", "challenge", "verify you are human", "confirma que eres humano", "verificar tu cuenta", "comprueba que eres humano"]):
+                print("  ⚠️ [Aviso X/Twitter]: Se detectó solicitud de verificación humana (anti-bot) en X.")
+                print("     Ventana visible activa. Si la ves en tu escritorio, podés hacer clic para resolverla (esperando 15s)...")
+                time.sleep(15)
+                page_content = (page.content() or "").lower()
+                if any(term in page_content for term in ["arkose", "challenge", "verify you are human", "confirma que eres humano", "verificar tu cuenta"]):
+                    print("     Avanzando sin X para no bloquear la recolección de Facebook e Instagram...")
+                    return []
+        except Exception:
+            pass
+
         for _ in range(2):
             page.mouse.wheel(0, 1200)
             time.sleep(1.5)
@@ -489,7 +537,7 @@ def extraer_posteos_twitter(page, url_busqueda: str, max_items: int = 8) -> List
     return tweets
 
 
-def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_grupo: int = 2) -> List[Dict[str, Any]]:
+def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_grupo: int = 2, max_items: int = 8) -> List[Dict[str, Any]]:
     """
     Navega a los grupos de los que es miembro el usuario (policiales y vecinales)
     y al feed consolidado de grupos, extrayendo reclamos, alertas e interacciones.
@@ -553,42 +601,82 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
                 page.mouse.wheel(0, 1500)
                 time.sleep(1)
 
+            # Desplegar "Ver más" de textos y botones de comentarios
             try:
                 page.evaluate(r"""() => {
-                    document.querySelectorAll('div[role="button"], span[role="button"]').forEach(b => {
-                        if ((b.innerText || '').includes('Ver más')) { try { b.click(); } catch(e){} }
+                    document.querySelectorAll('div[role="button"], span[role="button"], a[role="button"]').forEach(b => {
+                        const txt = (b.innerText || '').trim();
+                        if (txt.includes('Ver más')) { try { b.click(); } catch(e){} }
+                    });
+                    document.querySelectorAll('div[aria-label*="Comentar la publicación"], div[aria-label*="comentarios"], span[role="button"], div[role="button"]').forEach(b => {
+                        const aria = b.getAttribute('aria-label') || '';
+                        const txt = b.innerText || '';
+                        if (aria.includes('comentarios') || txt.includes('comentarios') || txt.includes('Ver más respuestas') || txt.includes('Ver más comentarios') || txt.includes('respuestas')) {
+                            try { b.click(); } catch(e){}
+                        }
                     });
                 }""")
+                time.sleep(2)
             except Exception:
                 pass
 
             items = page.evaluate(r"""() => {
                 const out = [];
-                const articles = Array.from(document.querySelectorAll('div[role="feed"] > div, div[role="article"]'));
-                for (const art of articles) {
-                    const msgEl = art.querySelector('div[dir="auto"][style*="text-align"], div[data-ad-preview="message"], div[dir="auto"]');
-                    const txt = msgEl ? (msgEl.innerText || '').trim() : '';
-                    if (txt && txt.length > 25 && !txt.includes('ordenar feed') && !txt.startsWith('Facebook')) {
-                        const authorEl = art.querySelector('h2 a, h3 a, strong a, a[role="link"] strong');
-                        const autor = authorEl ? authorEl.innerText.trim() : '';
-                        let directUrl = '';
-                        for (const a of Array.from(art.querySelectorAll('a[href]'))) {
-                            const h = a.href || '';
-                            if (h.includes('/posts/') || h.includes('/permalink/') || h.includes('/photo/') || h.includes('fbid=')) {
-                                directUrl = h;
-                                break;
-                            }
+                const feed = document.querySelector('div[role="feed"]');
+                const cards = feed ? Array.from(feed.children) : Array.from(document.querySelectorAll('div[role="article"]'));
+                for (const card of cards) {
+                    let msg = '';
+                    for (const d of Array.from(card.querySelectorAll('div[dir="auto"]'))) {
+                        const t = (d.innerText || '').trim();
+                        if (t.length > 25 && !t.includes('ordenar feed') && !t.startsWith('Facebook') && !t.includes('Escribe un comentario') && !t.includes('Detalles')) {
+                            if (t.length > msg.length) msg = t;
                         }
-                        let imgUrl = '';
-                        for (const im of Array.from(art.querySelectorAll('img'))) {
-                            const s = im.src || '';
-                            if (s && (s.includes('scontent') || s.includes('fbcdn.net')) && !s.includes('emoji')) {
-                                imgUrl = s;
-                                break;
-                            }
-                        }
-                        out.push({ autor, texto: txt, directUrl, imgUrl });
                     }
+                    if (!msg || msg.length < 25) continue;
+
+                    let autor = '';
+                    const actionBtn = card.querySelector('div[aria-label*="Acciones para esta publicación"]');
+                    if (actionBtn) {
+                        const aria = actionBtn.getAttribute('aria-label') || '';
+                        autor = aria.replace('Acciones para esta publicación de ', '').replace('Acciones para esta publicación', '').trim();
+                    }
+                    if (!autor) {
+                        const aLink = card.querySelector('h2 a, h3 a, h4 a, strong a, a[role="link"]');
+                        if (aLink) autor = (aLink.innerText || '').trim();
+                    }
+
+                    let directUrl = '';
+                    for (const a of Array.from(card.querySelectorAll('a[href]'))) {
+                        const h = a.href || '';
+                        if (h.includes('/permalink/') || h.includes('/posts/') || h.includes('/photo/') || h.includes('fbid=') || h.includes('/reel/')) {
+                            directUrl = h;
+                            break;
+                        }
+                    }
+
+                    let imgUrl = '';
+                    for (const im of Array.from(card.querySelectorAll('img'))) {
+                        const s = im.src || '';
+                        if (s && (s.includes('scontent') || s.includes('fbcdn.net')) && !s.includes('emoji') && !s.includes('rsrc')) {
+                            imgUrl = s;
+                            break;
+                        }
+                    }
+
+                    const comments = [];
+                    for (const c of Array.from(card.querySelectorAll('div[aria-label^="Comentario de"], div[aria-label*="Respuesta de"]'))) {
+                        const ctxt = (c.innerText || '').trim();
+                        const lines = ctxt.split('\n').map(l => l.trim()).filter(l => l && !['Responder', 'Me gusta', 'Compartir', 'Ver traducción', '·', 'Editado'].includes(l));
+                        if (lines.length >= 2) {
+                            const cAuthor = lines[0];
+                            const cBody = lines.slice(1).filter(l => !l.includes('sem') && !l.includes('min') && !l.includes('h') && !l.includes('d')).join(' ');
+                            if (cBody.length > 2 && cBody !== msg) {
+                                comments.push(`${cAuthor}: "${cBody}"`);
+                            }
+                        }
+                    }
+
+                    out.push({ autor, texto: msg, directUrl, imgUrl, comments: comments.slice(0, 4) });
                 }
                 return out;
             }""")
@@ -603,8 +691,8 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
                 url_fin = limpiar_url_fb(it.get("directUrl")) or g_url
                 partido_det = detectar_partido_en_texto(f"{g_nombre} {autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
 
-                comentarios = []
-                if url_fin and any(k in url_fin for k in ["/photo/", "/posts/", "/permalink/", "fbid="]):
+                comentarios = it.get("comments") or []
+                if not comentarios and url_fin and any(k in url_fin for k in ["/photo/", "/posts/", "/permalink/", "fbid="]):
                     comentarios = extraer_comentarios_facebook(page.context, url_fin, max_comentarios=3)
 
                 texto_full = txt
@@ -666,42 +754,82 @@ def extraer_posteos_referentes_policiales(page, max_items: int = 5) -> List[Dict
                 page.mouse.wheel(0, 1500)
                 time.sleep(1.2)
 
+            # Desplegar "Ver más" de textos y botones de comentarios
             try:
                 page.evaluate(r"""() => {
-                    document.querySelectorAll('div[role="button"], span[role="button"]').forEach(b => {
-                        if ((b.innerText || '').includes('Ver más')) { try { b.click(); } catch(e){} }
+                    document.querySelectorAll('div[role="button"], span[role="button"], a[role="button"]').forEach(b => {
+                        const txt = (b.innerText || '').trim();
+                        if (txt.includes('Ver más')) { try { b.click(); } catch(e){} }
+                    });
+                    document.querySelectorAll('div[aria-label*="Comentar la publicación"], div[aria-label*="comentarios"], span[role="button"], div[role="button"]').forEach(b => {
+                        const aria = b.getAttribute('aria-label') || '';
+                        const txt = b.innerText || '';
+                        if (aria.includes('comentarios') || txt.includes('comentarios') || txt.includes('Ver más respuestas') || txt.includes('Ver más comentarios') || txt.includes('respuestas')) {
+                            try { b.click(); } catch(e){}
+                        }
                     });
                 }""")
+                time.sleep(2)
             except Exception:
                 pass
 
             items = page.evaluate(r"""() => {
                 const out = [];
-                const articles = Array.from(document.querySelectorAll('div[role="feed"] > div, div[role="article"]'));
-                for (const art of articles) {
-                    const msgEl = art.querySelector('div[dir="auto"][style*="text-align"], div[data-ad-preview="message"], div[dir="auto"]');
-                    const txt = msgEl ? (msgEl.innerText || '').trim() : '';
-                    if (txt && txt.length > 25 && !txt.includes('ordenar feed') && !txt.startsWith('Facebook')) {
-                        const authorEl = art.querySelector('h2 a, h3 a, strong a, a[role="link"] strong');
-                        const autor = authorEl ? authorEl.innerText.trim() : '';
-                        let directUrl = '';
-                        for (const a of Array.from(art.querySelectorAll('a[href]'))) {
-                            const h = a.href || '';
-                            if (h.includes('/posts/') || h.includes('/permalink/') || h.includes('/photo/') || h.includes('fbid=')) {
-                                directUrl = h;
-                                break;
-                            }
+                const feed = document.querySelector('div[role="feed"]');
+                const cards = feed ? Array.from(feed.children) : Array.from(document.querySelectorAll('div[role="article"]'));
+                for (const card of cards) {
+                    let msg = '';
+                    for (const d of Array.from(card.querySelectorAll('div[dir="auto"]'))) {
+                        const t = (d.innerText || '').trim();
+                        if (t.length > 25 && !t.includes('ordenar feed') && !t.startsWith('Facebook') && !t.includes('Escribe un comentario') && !t.includes('Detalles')) {
+                            if (t.length > msg.length) msg = t;
                         }
-                        let imgUrl = '';
-                        for (const im of Array.from(art.querySelectorAll('img'))) {
-                            const s = im.src || '';
-                            if (s && (s.includes('scontent') || s.includes('fbcdn.net')) && !s.includes('emoji')) {
-                                imgUrl = s;
-                                break;
-                            }
-                        }
-                        out.push({ autor, texto: txt, directUrl, imgUrl });
                     }
+                    if (!msg || msg.length < 25) continue;
+
+                    let autor = '';
+                    const actionBtn = card.querySelector('div[aria-label*="Acciones para esta publicación"]');
+                    if (actionBtn) {
+                        const aria = actionBtn.getAttribute('aria-label') || '';
+                        autor = aria.replace('Acciones para esta publicación de ', '').replace('Acciones para esta publicación', '').trim();
+                    }
+                    if (!autor) {
+                        const aLink = card.querySelector('h2 a, h3 a, h4 a, strong a, a[role="link"]');
+                        if (aLink) autor = (aLink.innerText || '').trim();
+                    }
+
+                    let directUrl = '';
+                    for (const a of Array.from(card.querySelectorAll('a[href]'))) {
+                        const h = a.href || '';
+                        if (h.includes('/permalink/') || h.includes('/posts/') || h.includes('/photo/') || h.includes('fbid=') || h.includes('/reel/')) {
+                            directUrl = h;
+                            break;
+                        }
+                    }
+
+                    let imgUrl = '';
+                    for (const im of Array.from(card.querySelectorAll('img'))) {
+                        const s = im.src || '';
+                        if (s && (s.includes('scontent') || s.includes('fbcdn.net')) && !s.includes('emoji') && !s.includes('rsrc')) {
+                            imgUrl = s;
+                            break;
+                        }
+                    }
+
+                    const comments = [];
+                    for (const c of Array.from(card.querySelectorAll('div[aria-label^="Comentario de"], div[aria-label*="Respuesta de"]'))) {
+                        const ctxt = (c.innerText || '').trim();
+                        const lines = ctxt.split('\n').map(l => l.trim()).filter(l => l && !['Responder', 'Me gusta', 'Compartir', 'Ver traducción', '·', 'Editado'].includes(l));
+                        if (lines.length >= 2) {
+                            const cAuthor = lines[0];
+                            const cBody = lines.slice(1).filter(l => !l.includes('sem') && !l.includes('min') && !l.includes('h') && !l.includes('d')).join(' ');
+                            if (cBody.length > 2 && cBody !== msg) {
+                                comments.push(`${cAuthor}: "${cBody}"`);
+                            }
+                        }
+                    }
+
+                    out.push({ autor, texto: msg, directUrl, imgUrl, comments: comments.slice(0, 4) });
                 }
                 return out;
             }""")
@@ -714,8 +842,8 @@ def extraer_posteos_referentes_policiales(page, max_items: int = 5) -> List[Dict
                 url_fin = limpiar_url_fb(it.get("directUrl")) or f_item["url"]
                 partido_det = detectar_partido_en_texto(f"{autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
 
-                comentarios = []
-                if url_fin and any(k in url_fin for k in ["/photo/", "/posts/", "/permalink/", "fbid="]):
+                comentarios = it.get("comments") or []
+                if not comentarios and url_fin and any(k in url_fin for k in ["/photo/", "/posts/", "/permalink/", "fbid="]):
                     comentarios = extraer_comentarios_facebook(page.context, url_fin, max_comentarios=3)
 
                 texto_full = txt
@@ -1065,10 +1193,15 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
 
             time.sleep(1.2)
 
-        # Fase 2: Grupos de los que es miembro / sigue en Facebook
-        print("\n👥 Explorando grupos y comunidades de miembros en Facebook...")
-        fb_grupos = extraer_posteos_facebook_grupos(page, max_items=6)
+        # Fase 2: Grupos policiales y vecinales de PBA
+        print("\n👥 Explorando grupos policiales y vecinales en Facebook...")
+        fb_grupos = extraer_posteos_facebook_grupos(page, max_grupos=4, max_items_por_grupo=2)
         total_recolectados.extend(fb_grupos)
+
+        # Fase 2.5: Referentes Policiales y Virginia Luján Sosa
+        print("\n👮 Monitoreando referentes policiales y Virginia Luján Sosa...")
+        fb_sosa = extraer_posteos_referentes_policiales(page, max_items=4)
+        total_recolectados.extend(fb_sosa)
 
         # Fase 3: Feed de amigos y contactos en Facebook
         print("\n👤 Explorando feed de amigos y contactos en Facebook...")
