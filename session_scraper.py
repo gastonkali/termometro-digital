@@ -489,31 +489,67 @@ def extraer_posteos_twitter(page, url_busqueda: str, max_items: int = 8) -> List
     return tweets
 
 
-def extraer_posteos_facebook_grupos(page, max_items: int = 8) -> List[Dict[str, Any]]:
+def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_grupo: int = 2) -> List[Dict[str, Any]]:
     """
-    Navega al feed consolidado de grupos y a grupos miembros del usuario en Facebook,
-    extrayendo reclamos, incidentes, imágenes y comentarios de vecinos.
+    Navega a los grupos de los que es miembro el usuario (policiales y vecinales)
+    y al feed consolidado de grupos, extrayendo reclamos, alertas e interacciones.
     """
     from config_pba import es_exclusion_geografica, es_texto_espanol
     from engine import detectar_partido_en_texto
 
-    posteos = []
-    urls_grupos = [
-        "https://www.facebook.com/groups/feed/",
-        "https://www.facebook.com/groups/policialesbahiaok/",
-        "https://www.facebook.com/groups/sanvicenteconectado/",
-        "https://www.facebook.com/groups/990924476974016/",
-        "https://www.facebook.com/groups/260758975428433/",
+    GRUPOS_USUARIO = [
+        # Policiales Bonaerenses
+        {"nombre": "Policiales Bahia", "url": "https://www.facebook.com/groups/policialesbahiaok/", "categoria": "seguridad"},
+        {"nombre": "RUMORES POLICIALES", "url": "https://www.facebook.com/groups/990924476974016/", "categoria": "seguridad"},
+        {"nombre": "RUMORES POLICÍA BS. AS.", "url": "https://www.facebook.com/groups/922738057507400/", "categoria": "seguridad"},
+        {"nombre": "Permutas Policía Bonaerense y Local", "url": "https://www.facebook.com/groups/205011000866057/", "categoria": "seguridad"},
+        # Vecinales Conectados de PBA
+        {"nombre": "Lomas Conectado", "url": "https://www.facebook.com/groups/lomasconectado/", "categoria": "seguridad"},
+        {"nombre": "Vecinos de Avellaneda", "url": "https://www.facebook.com/groups/331221260013652/", "categoria": "seguridad"},
+        {"nombre": "San Vicente Conectado", "url": "https://www.facebook.com/groups/sanvicenteconectado/", "categoria": "seguridad"},
+        {"nombre": "Banfield Conectado", "url": "https://www.facebook.com/groups/banfieldconectado/", "categoria": "seguridad"},
+        {"nombre": "Bella Vista Conectado", "url": "https://www.facebook.com/groups/515289091959193/", "categoria": "seguridad"},
+        {"nombre": "Moreno Conectado", "url": "https://www.facebook.com/groups/846636522073940/", "categoria": "seguridad"},
+        {"nombre": "Vecinos de Villa Adelina", "url": "https://www.facebook.com/groups/vecinosadelina/", "categoria": "seguridad"},
+        {"nombre": "José C. Paz Conectado", "url": "https://www.facebook.com/groups/1958608358362843/", "categoria": "seguridad"},
+        {"nombre": "Del Viso / Alberti Conectados", "url": "https://www.facebook.com/groups/708319824599208/", "categoria": "seguridad"},
+        {"nombre": "Grand Bourg Conectado", "url": "https://www.facebook.com/groups/260758975428433/", "categoria": "seguridad"},
+        {"nombre": "Budge Conectado", "url": "https://www.facebook.com/groups/budgeconectado/", "categoria": "seguridad"},
+        {"nombre": "Feed General de Grupos", "url": "https://www.facebook.com/groups/feed/", "categoria": "seguridad"},
     ]
 
-    for g_url in urls_grupos:
-        if len(posteos) >= max_items:
-            break
+    state_file = os.path.join(BASE_DIR, "scraper_state.json")
+    idx_g = 0
+    if os.path.exists(state_file):
         try:
-            print(f"  👥 Explorando grupos del usuario: {g_url}...")
+            with open(state_file, "r", encoding="utf-8") as sf:
+                sdata = json.load(sf)
+                idx_g = sdata.get("proximo_grupo_idx", 0) % len(GRUPOS_USUARIO)
+        except Exception:
+            idx_g = 0
+
+    grupos_a_visitar = [GRUPOS_USUARIO[(idx_g + i) % len(GRUPOS_USUARIO)] for i in range(max_grupos)]
+    try:
+        sdata = {}
+        if os.path.exists(state_file):
+            with open(state_file, "r", encoding="utf-8") as sf:
+                sdata = json.load(sf)
+        sdata["proximo_grupo_idx"] = (idx_g + max_grupos) % len(GRUPOS_USUARIO)
+        with open(state_file, "w", encoding="utf-8") as sf:
+            json.dump(sdata, sf, indent=2)
+    except Exception:
+        pass
+
+    posteos = []
+
+    for g_info in grupos_a_visitar:
+        g_nombre = g_info["nombre"]
+        g_url = g_info["url"]
+        try:
+            print(f"  👥 Explorando grupo: {g_nombre} ({g_url})...")
             page.goto(g_url, timeout=30000, wait_until="domcontentloaded")
-            time.sleep(3)
-            for _ in range(2):
+            time.sleep(3.5)
+            for _ in range(3):
                 page.mouse.wheel(0, 1500)
                 time.sleep(1)
 
@@ -527,53 +563,45 @@ def extraer_posteos_facebook_grupos(page, max_items: int = 8) -> List[Dict[str, 
                 pass
 
             items = page.evaluate(r"""() => {
-                const feed = document.querySelector('div[role="feed"]') || document.querySelector('div[role="main"]');
-                const cards = feed ? Array.from(feed.children) : [];
                 const out = [];
-                for (const card of cards) {
-                    const rawLines = (card.innerText || '').split('\n').map(l => l.replace(/Ver más/gi, '').trim()).filter(l => {
-                        if (!l || l.length < 3 || l === 'Facebook' || l === '·' || l === 'Seguir' || l === 'Unirte') return false;
-                        if (l.includes('Publicación compartida') || l.includes('Contenido sensible') || l.includes('Puede ser una imagen')) return false;
-                        if (/^\d+$/.test(l)) return false;
-                        if (l.length < 15 && l.includes('\u034f')) return false;
-                        return true;
-                    });
-                    if (rawLines.length === 0) continue;
-                    const autor = rawLines[0];
-                    const bodyLines = rawLines.slice(1).filter(l => l.length > 5 && !l.includes('de 202'));
-                    const texto = bodyLines.join('\n');
-                    if (texto.length < 25) continue;
-
-                    let imgUrl = '';
-                    for (const im of Array.from(card.querySelectorAll('img'))) {
-                        const s = im.src || '';
-                        if (s && (s.includes('scontent') || s.includes('external.') || s.includes('fbcdn.net')) && !s.includes('emoji') && !s.includes('rsrc')) {
-                            const w = im.naturalWidth || im.width || 0;
-                            if (w > 120 || !w) { imgUrl = s; break; }
+                const articles = Array.from(document.querySelectorAll('div[role="feed"] > div, div[role="article"]'));
+                for (const art of articles) {
+                    const msgEl = art.querySelector('div[dir="auto"][style*="text-align"], div[data-ad-preview="message"], div[dir="auto"]');
+                    const txt = msgEl ? (msgEl.innerText || '').trim() : '';
+                    if (txt && txt.length > 25 && !txt.includes('ordenar feed') && !txt.startsWith('Facebook')) {
+                        const authorEl = art.querySelector('h2 a, h3 a, strong a, a[role="link"] strong');
+                        const autor = authorEl ? authorEl.innerText.trim() : '';
+                        let directUrl = '';
+                        for (const a of Array.from(art.querySelectorAll('a[href]'))) {
+                            const h = a.href || '';
+                            if (h.includes('/posts/') || h.includes('/permalink/') || h.includes('/photo/') || h.includes('fbid=')) {
+                                directUrl = h;
+                                break;
+                            }
                         }
-                    }
-
-                    let directUrl = '';
-                    for (const a of Array.from(card.querySelectorAll('a[href]'))) {
-                        const h = a.href || '';
-                        if (h.includes('/posts/') || h.includes('/permalink/') || h.includes('/photo/') || h.includes('fbid=')) {
-                            directUrl = h;
-                            break;
+                        let imgUrl = '';
+                        for (const im of Array.from(art.querySelectorAll('img'))) {
+                            const s = im.src || '';
+                            if (s && (s.includes('scontent') || s.includes('fbcdn.net')) && !s.includes('emoji')) {
+                                imgUrl = s;
+                                break;
+                            }
                         }
+                        out.push({ autor, texto: txt, directUrl, imgUrl });
                     }
-                    out.push({ autor, texto, imgUrl, directUrl });
                 }
                 return out;
             }""")
 
+            items_grupo = 0
             for it in items:
                 txt = it.get("texto", "").strip()
-                if not txt or len(txt) < 30 or not es_texto_espanol(txt) or es_exclusion_geografica(txt):
+                if not txt or len(txt) < 25 or not es_texto_espanol(txt) or es_exclusion_geografica(txt):
                     continue
 
-                autor = it.get("autor") or "Vecino en Grupo FB"
+                autor = it.get("autor") or f"Vecino / Camarada en {g_nombre}"
                 url_fin = limpiar_url_fb(it.get("directUrl")) or g_url
-                partido_det = detectar_partido_en_texto(f"{autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
+                partido_det = detectar_partido_en_texto(f"{g_nombre} {autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
 
                 comentarios = []
                 if url_fin and any(k in url_fin for k in ["/photo/", "/posts/", "/permalink/", "fbid="]):
@@ -585,7 +613,118 @@ def extraer_posteos_facebook_grupos(page, max_items: int = 8) -> List[Dict[str, 
 
                 primer_renglon = txt.split("\n")[0][:75].strip()
                 posteos.append({
-                    "fuente": f"Facebook (Grupo: {autor[:30]})",
+                    "fuente": f"Facebook (Grupo: {g_nombre})",
+                    "autor": autor,
+                    "url": url_fin,
+                    "titulo": f"{autor}: {primer_renglon}",
+                    "texto": texto_full,
+                    "comentarios": comentarios,
+                    "imagen_url": it.get("imgUrl", ""),
+                    "partido": partido_det,
+                    "categoria": g_info.get("categoria", "seguridad"),
+                    "pasada": "grupos_vecinales",
+                    "fecha_publicacion": "En vivo desde mis grupos"
+                })
+                items_grupo += 1
+                if items_grupo >= max_items_por_grupo:
+                    break
+
+        except Exception as e:
+            print(f"  [Aviso Grupo {g_nombre}]: {e}")
+
+    return posteos
+
+
+def extraer_posteos_referentes_policiales(page, max_items: int = 5) -> List[Dict[str, Any]]:
+    """
+    Monitorea de forma dedicada a Virginia Luján Sosa y referentes policiales bonaerenses.
+    Extrae sus publicaciones, reclamos institucionales, movilizaciones y comentarios de camaradas.
+    """
+    from engine import detectar_partido_en_texto
+    from config_pba import es_exclusion_geografica, es_texto_espanol
+
+    posteos = []
+    fuentes_policiales = [
+        {
+            "nombre": "Virginia Luján Sosa (Perfil)",
+            "url": "https://www.facebook.com/russita.sosa",
+            "autor_default": "Virginia Luján Sosa"
+        },
+        {
+            "nombre": "Búsqueda Virginia Luján Sosa en FB",
+            "url": "https://www.facebook.com/search/posts?q=Virginia%20Lujan%20Sosa&filters=eyJyZWNlbnRfcG9zdHM6MCI6IntcIm5hbWVcIjpcInJlY2VudF9wb3N0c1wiLFwiYXJnc1wiOlwiXCJ9In0%3D",
+            "autor_default": "Reclamos Policiales PBA"
+        }
+    ]
+
+    for f_item in fuentes_policiales:
+        try:
+            print(f"  👮 Explorando referente policial: {f_item['nombre']}...")
+            page.goto(f_item["url"], timeout=30000, wait_until="domcontentloaded")
+            time.sleep(3.5)
+            for _ in range(3):
+                page.mouse.wheel(0, 1500)
+                time.sleep(1.2)
+
+            try:
+                page.evaluate(r"""() => {
+                    document.querySelectorAll('div[role="button"], span[role="button"]').forEach(b => {
+                        if ((b.innerText || '').includes('Ver más')) { try { b.click(); } catch(e){} }
+                    });
+                }""")
+            except Exception:
+                pass
+
+            items = page.evaluate(r"""() => {
+                const out = [];
+                const articles = Array.from(document.querySelectorAll('div[role="feed"] > div, div[role="article"]'));
+                for (const art of articles) {
+                    const msgEl = art.querySelector('div[dir="auto"][style*="text-align"], div[data-ad-preview="message"], div[dir="auto"]');
+                    const txt = msgEl ? (msgEl.innerText || '').trim() : '';
+                    if (txt && txt.length > 25 && !txt.includes('ordenar feed') && !txt.startsWith('Facebook')) {
+                        const authorEl = art.querySelector('h2 a, h3 a, strong a, a[role="link"] strong');
+                        const autor = authorEl ? authorEl.innerText.trim() : '';
+                        let directUrl = '';
+                        for (const a of Array.from(art.querySelectorAll('a[href]'))) {
+                            const h = a.href || '';
+                            if (h.includes('/posts/') || h.includes('/permalink/') || h.includes('/photo/') || h.includes('fbid=')) {
+                                directUrl = h;
+                                break;
+                            }
+                        }
+                        let imgUrl = '';
+                        for (const im of Array.from(art.querySelectorAll('img'))) {
+                            const s = im.src || '';
+                            if (s && (s.includes('scontent') || s.includes('fbcdn.net')) && !s.includes('emoji')) {
+                                imgUrl = s;
+                                break;
+                            }
+                        }
+                        out.push({ autor, texto: txt, directUrl, imgUrl });
+                    }
+                }
+                return out;
+            }""")
+
+            for it in items:
+                txt = it.get("texto", "").strip()
+                if not txt or len(txt) < 25 or not es_texto_espanol(txt) or es_exclusion_geografica(txt):
+                    continue
+                autor = it.get("autor") or f_item["autor_default"]
+                url_fin = limpiar_url_fb(it.get("directUrl")) or f_item["url"]
+                partido_det = detectar_partido_en_texto(f"{autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
+
+                comentarios = []
+                if url_fin and any(k in url_fin for k in ["/photo/", "/posts/", "/permalink/", "fbid="]):
+                    comentarios = extraer_comentarios_facebook(page.context, url_fin, max_comentarios=3)
+
+                texto_full = txt
+                if comentarios:
+                    texto_full += "\n\n💬 Comentarios destacados de camaradas / vecinos:\n" + "\n".join(f"• {c}" for c in comentarios)
+
+                primer_renglon = txt.split("\n")[0][:75].strip()
+                posteos.append({
+                    "fuente": f"Facebook ({f_item['nombre']})",
                     "autor": autor,
                     "url": url_fin,
                     "titulo": f"{autor}: {primer_renglon}",
@@ -594,17 +733,16 @@ def extraer_posteos_facebook_grupos(page, max_items: int = 8) -> List[Dict[str, 
                     "imagen_url": it.get("imgUrl", ""),
                     "partido": partido_det,
                     "categoria": "seguridad",
-                    "pasada": "grupos_vecinales",
-                    "fecha_publicacion": "En vivo desde mis grupos"
+                    "pasada": "referentes_policiales",
+                    "fecha_publicacion": "En vivo desde referente policial"
                 })
                 if len(posteos) >= max_items:
                     break
 
         except Exception as e:
-            print(f"  [Aviso Grupos FB]: {e}")
+            print(f"  [Aviso Referentes Policiales]: {e}")
 
     return posteos
-
 
 def extraer_posteos_facebook_amigos(page, max_items: int = 5) -> List[Dict[str, Any]]:
     """
