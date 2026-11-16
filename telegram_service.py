@@ -43,6 +43,19 @@ def formatear_mensaje_telegram(datos_edicion: Dict[str, Any]) -> str:
         ""
     ]
 
+    relevamiento = datos_edicion.get("relevamiento_grupos", [])
+    if relevamiento:
+        msg.append(f"👥 *RELEVAMIENTO DE TUS GRUPOS Y CONTACTOS ({len(relevamiento)}):*")
+        for g in relevamiento[:4]:
+            f_nom = g.get("fuente", "Grupo").replace("Facebook (", "").replace(")", "").replace("Grupo: ", "")
+            p = g.get("partido", "PBA")
+            autor = g.get("autor", "Miembro")
+            txt_corto = recortar_telegram(g.get("texto") or g.get("titulo") or "", 95)
+            url = g.get("url") or ""
+            link_str = f" [ver ↗]({url})" if url and url.startswith("http") else ""
+            msg.append(f"• *[{f_nom} · {p}]* {autor}: _{txt_corto}_{link_str}")
+        msg.append("")
+
     if convocatorias:
         msg.append(f"📅 *CONVOCATORIAS / PROTESTAS ({len(convocatorias)}):*")
         for c in convocatorias[:5]:

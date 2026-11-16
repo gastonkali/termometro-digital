@@ -1236,6 +1236,16 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
                         "SELECT partido, autor, texto FROM hallazgos WHERE edicion_id = ? AND descartado = 0 ORDER BY id DESC LIMIT 3",
                         (edicion_id,),
                     ).fetchall()
+                    grupos_dest = conn.execute(
+                        """
+                        SELECT id, fuente, autor, partido, titulo, texto, url FROM hallazgos
+                        WHERE (edicion_id = ? OR id > (SELECT COALESCE(MAX(id)-20, 0) FROM hallazgos))
+                          AND (pasada IN ('grupos_vecinales', 'feed_amigos', 'referentes_policiales', 'instagram_amigos')
+                               OR fuente LIKE '%Grupo%' OR fuente LIKE '%Amigos%' OR fuente LIKE '%Virginia%')
+                        ORDER BY id DESC LIMIT 4
+                        """,
+                        (edicion_id,),
+                    ).fetchall()
                     conn.close()
 
                     datos_edicion = {
@@ -1245,6 +1255,7 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
                         "convocatorias": [dict(c) for c in convocatorias],
                         "nombres_propios": [n["nombre"] for n in nombres],
                         "hallazgos_destacados": [dict(h) for h in hallazgos_dest],
+                        "relevamiento_grupos": [dict(g) for g in grupos_dest],
                     }
                     print("📲 Enviando reporte y PDF a Telegram...")
                     res_tg = enviar_alerta_telegram(datos_edicion, ruta_pdf=ruta_pdf or "")

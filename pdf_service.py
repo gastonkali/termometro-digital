@@ -250,6 +250,113 @@ def generar_html_reporte(
         "imagen_institucional": "imagen institucional"
     }
 
+    # Relevamiento exclusivo de Grupos, Red Personal y Contactos seguidos
+    items_red_propia = []
+    ids_vistos = set()
+    for r in raw_items:
+        p_val = (r.get("pasada") or "").lower()
+        f_val = (r.get("fuente") or "").lower()
+        if (
+            p_val in ("grupos_vecinales", "feed_amigos", "referentes_policiales", "instagram_amigos")
+            or "grupo:" in f_val
+            or "amigos" in f_val
+            or "contactos" in f_val
+            or "virginia" in f_val
+            or "policiales" in f_val
+            or "permutas" in f_val
+            or "rumores" in f_val
+        ):
+            if r["id"] not in ids_vistos:
+                ids_vistos.add(r["id"])
+                items_red_propia.append(r)
+
+    # Si hay pocos en la edición actual, complementar con los últimos registrados en la base
+    if len(items_red_propia) < 3:
+        conn = get_conn()
+        recientes_grupos = conn.execute(
+            """
+            SELECT * FROM hallazgos
+            WHERE pasada IN ('grupos_vecinales', 'feed_amigos', 'referentes_policiales', 'instagram_amigos')
+               OR fuente LIKE '%Grupo%'
+               OR fuente LIKE '%Amigos%'
+               OR fuente LIKE '%Virginia%'
+            ORDER BY id DESC LIMIT 6
+            """
+        ).fetchall()
+        conn.close()
+        for rg in recientes_grupos:
+            rg_d = dict(rg)
+            if rg_d["id"] not in ids_vistos:
+                ids_vistos.add(rg_d["id"])
+                items_red_propia.append(rg_d)
+                if len(items_red_propia) >= 4:
+                    break
+
+    filas_red_propia = ""
+    for item in items_red_propia[:3]:
+        f_nom = item.get("fuente", "Facebook")
+        comunidad_lbl = f_nom.replace("Facebook (", "").replace(")", "").replace("Grupo: ", "")
+        if "Permutas" in comunidad_lbl:
+            comunidad_lbl = "Permutas Policía PBA"
+        elif "RUMORES POLICIALES" in comunidad_lbl:
+            comunidad_lbl = "Rumores Policiales PBA"
+        elif "Policiales Bahia" in comunidad_lbl:
+            comunidad_lbl = "Policiales Bahía Blanca"
+        elif "Virginia" in comunidad_lbl:
+            comunidad_lbl = "Virginia Luján Sosa"
+        elif "Amigos" in comunidad_lbl or "Contactos" in comunidad_lbl:
+            comunidad_lbl = "Feed Amigos / Contactos"
+
+        autor = html_lib.escape(item.get("autor") or "Miembro")
+        partido = html_lib.escape(item.get("partido") or "PBA")
+        
+        txt_raw = item.get("texto") or item.get("titulo") or ""
+        txt_limpio = html_lib.escape(recortar_texto_limpio(txt_raw.split("\n\n💬")[0], 110))
+        
+        comms_raw = item.get("comentarios") or item.get("comentarios_json") or []
+        if isinstance(comms_raw, str):
+            try:
+                comms_raw = json.loads(comms_raw)
+            except Exception:
+                comms_raw = []
+        
+        reaccion_txt = ""
+        if comms_raw and isinstance(comms_raw, list):
+            c_primero = str(comms_raw[0]).strip().replace("\xa0", " ")
+            if ":" in c_primero:
+                c_autor, c_cuerpo = c_primero.split(":", 1)
+                reaccion_txt = f"<strong>{html_lib.escape(c_autor.strip())}:</strong> “{html_lib.escape(recortar_texto_limpio(c_cuerpo.strip(), 70))}”"
+            else:
+                reaccion_txt = f"“{html_lib.escape(recortar_texto_limpio(c_primero, 75))}”"
+            if len(comms_raw) > 1:
+                reaccion_txt += f" <span style='color:#64748b; font-size:6.5pt;'>+{len(comms_raw)-1} más</span>"
+        else:
+            reaccion_txt = "<span style='color:#94a3b8; font-style:italic;'>Sin comentarios adicionales</span>"
+
+        url_directa = item.get("url") or "#"
+
+        filas_red_propia += f"""
+        <tr>
+          <td>
+            <strong style="color:#1e3a8a;">{html_lib.escape(comunidad_lbl)}</strong><br/>
+            <span style="font-size: 6.8pt; color: #475569;">Por: {autor}</span>
+          </td>
+          <td><strong>{partido}</strong></td>
+          <td>{txt_limpio}</td>
+          <td>{reaccion_txt}</td>
+          <td style="text-align: center;"><a class="link-inline" href="{url_directa}">ver ↗</a></td>
+        </tr>
+        """
+
+    if not filas_red_propia:
+        filas_red_propia = """
+        <tr>
+          <td colspan="5" style="text-align: center; color: #64748b; font-style: italic; padding: 8px;">
+            Sin publicaciones recientes detectadas en grupos o contactos durante este corte.
+          </td>
+        </tr>
+        """
+
     html = f"""<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -591,8 +698,25 @@ def generar_html_reporte(
       </div>
     </div>
 
+    <!-- SECCIÓN RELEVAMIENTO DE GRUPOS Y CONTACTOS PROPIOS -->
+    <div class="section-title">Relevamiento exclusivo — Grupos y contactos que sigo</div>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th style="width: 23%;">Comunidad / Contacto</th>
+          <th style="width: 14%;">Partido</th>
+          <th style="width: 33%;">Publicación y reclamo</th>
+          <th style="width: 22%;">Comentarios de miembros</th>
+          <th style="width: 8%; text-align: center;">Link</th>
+        </tr>
+      </thead>
+      <tbody>
+        {filas_red_propia}
+      </tbody>
+    </table>
+
     <!-- TABLA HECHOS VIGENTES -->
-    <div class="section-title">Hechos vigentes</div>
+    <div class="section-title">Hechos vigentes y alertas públicas PBA</div>
     <table class="data-table">
       <thead>
         <tr>
@@ -618,7 +742,7 @@ def generar_html_reporte(
         </tr>
         """
     else:
-        for c in clusters_vigentes[:5]:
+        for c in clusters_vigentes[:3]:
             pill_class = (
                 "pill-clima-alerta" if c["clima_estado"] == "EN ALERTA"
                 else ("pill-clima-moderado" if c["clima_estado"] == "MODERADO" else "pill-clima-bueno")
@@ -774,15 +898,17 @@ def generar_html_reporte(
     else:
         agenda_html = '<div class="agenda-empty">No se detectaron convocatorias con fecha u horario en este corte.</div>'
 
-    html += f"""
-    <!-- AGENDA DE CONVOCATORIAS -->
-    <div class="section-title">Agenda de convocatorias y protestas</div>
-    {agenda_html}
+    html += """
   </div>
 
-  <!-- PÁGINA 2: ANEXOS -->
+  <!-- PÁGINA 2: AGENDA Y ANEXOS -->
   <div class="page">
-    <div class="section-title" style="margin-top: 0; font-size: 11pt;">Anexo — Publicaciones descartadas</div>
+    <!-- AGENDA DE CONVOCATORIAS -->
+    <div class="section-title" style="margin-top: 0; font-size: 11pt;">Agenda de convocatorias y protestas</div>
+""" + f"""
+    {agenda_html}
+
+    <div class="section-title" style="margin-top: 10px; font-size: 11pt;">Anexo — Publicaciones descartadas</div>
     <table class="data-table anexo-table">
       <thead>
         <tr>
