@@ -191,6 +191,21 @@ def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> Lis
             page.mouse.wheel(0, 1500)
             time.sleep(1.5)
 
+        # Expandir botones "Ver más" para no perder texto cortado
+        try:
+            page.evaluate(r"""() => {
+                const buttons = document.querySelectorAll('div[role="button"], span[role="button"], a[role="button"]');
+                for (const b of buttons) {
+                    const txt = (b.innerText || '').trim();
+                    if (txt === 'Ver más' || txt === 'See more') {
+                        try { b.click(); } catch(e) {}
+                    }
+                }
+            }""")
+            time.sleep(0.8)
+        except Exception:
+            pass
+
         raw_items = page.evaluate(r"""() => {
             const results = [];
             const seen = new Set();
@@ -201,9 +216,11 @@ def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> Lis
             const cards = feed ? Array.from(feed.children) : Array.from(main.querySelectorAll('div[role="article"]'));
 
             for (const card of cards) {
-                const rawLines = (card.innerText || '').split('\n').map(l => l.trim()).filter(l => {
+                const rawLines = (card.innerText || '').split('\n').map(l => {
+                    return l.replace(/Ver más/gi, '').replace(/See more/gi, '').replace(/\.\.\.$/, '').trim();
+                }).filter(l => {
                     if (!l || l.length < 3 || l === 'Facebook' || l === '·' || l === 'Seguir' || l === 'Unirte') return false;
-                    if (l.includes('Ver más') || l.includes('Publicación compartida') || l.includes('Contenido sensible') || l.includes('Puede ser una imagen')) return false;
+                    if (l.includes('Publicación compartida') || l.includes('Contenido sensible') || l.includes('Puede ser una imagen')) return false;
                     if (/^\d+$/.test(l)) return false;
                     if (l.length < 15 && l.includes('\u034f')) return false;
                     return true;
@@ -390,6 +407,15 @@ def extraer_posteos_twitter(page, url_busqueda: str, max_items: int = 8) -> List
         articulos = page.locator('article[data-testid="tweet"]').all()
         for art in articulos:
             try:
+                # Expandir si está cortado con "Mostrar más"
+                show_more = art.locator('[data-testid="tweet-text-show-more-link"]').first
+                if show_more.count():
+                    try:
+                        show_more.click()
+                        time.sleep(0.3)
+                    except Exception:
+                        pass
+
                 # Extraer texto del tweet
                 text_el = art.locator('[data-testid="tweetText"]').first
                 if not text_el.count():

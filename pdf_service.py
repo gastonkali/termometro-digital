@@ -172,6 +172,7 @@ def generar_html_reporte(edicion_id: int) -> str:
       padding: 12px;
       margin-bottom: 12px;
       page-break-inside: avoid;
+      break-inside: avoid;
     }}
     .preview-box {{
       background: #f8fafc;
@@ -190,9 +191,11 @@ def generar_html_reporte(edicion_id: int) -> str:
     .preview-text {{
       color: #1e293b;
       font-size: 9.5pt;
-      line-height: 1.45;
+      line-height: 1.5;
       margin: 0;
       white-space: pre-wrap;
+      word-break: break-word;
+      overflow-wrap: break-word;
     }}
     .item {{
       border-bottom: 1px solid #f1f5f9;
@@ -309,8 +312,7 @@ def generar_html_reporte(edicion_id: int) -> str:
             texto_raw = texto_raw.split(" [Comentarios:")[0].strip()
         partes = texto_raw.split("💬 Comentarios destacados de vecinos:")
         texto_principal = partes[0].strip()
-        if len(texto_principal) > 350:
-            texto_principal = texto_principal[:350] + "..."
+        # Mostrar el texto completo de la publicación sin recortar a 350 caracteres
 
         bloque_comentarios = ""
         comentarios_lista = []
