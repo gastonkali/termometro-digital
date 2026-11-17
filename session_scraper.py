@@ -99,7 +99,39 @@ JS_HELPERS_TARJETA = r"""() => {
         }
         return { url: '', fecha };
     }
-    window.__td = { urlYFecha };
+    function numero(txt) {
+        let t = (txt || '').toLowerCase().replace(/ /g, ' ').trim();
+        const m = t.match(/(\d[\d.,]*)\s*(mil|k|m)?\b/);
+        if (!m) return 0;
+        let n = m[1], mult = 1;
+        if (m[2] === 'mil' || m[2] === 'k') mult = 1000;
+        else if (m[2] === 'm') mult = 1000000;
+        const v = mult > 1 ? parseFloat(n.includes(',') ? n.replace(/\./g, '').replace(',', '.') : n)
+                           : parseFloat(n.replace(/[.,]/g, ''));
+        return Math.round((v || 0) * mult);
+    }
+    function metricas(card) {
+        // Solo el texto de la tarjeta fuera de los comentarios
+        const out = { comentarios: 0, compartidos: 0, reacciones: 0 };
+        const clon = card.cloneNode(true);
+        clon.querySelectorAll('[aria-label^="Comentario de"], [aria-label^="Respuesta de"], [aria-label^="Comment by"], [aria-label^="Reply by"]').forEach(e => e.remove());
+        const lineas = (clon.innerText || card.innerText || '').split('\n').map(l => l.trim());
+        for (const l of lineas) {
+            let m = l.match(/^(\d[\d.,]*\s*(?:mil|k|m)?)\s+comentarios?$/i) || l.match(/^(\d[\d.,]*\s*(?:mil|k|m)?)\s+comments?$/i);
+            if (m) out.comentarios = Math.max(out.comentarios, numero(m[1]));
+            m = l.match(/^(\d[\d.,]*\s*(?:mil|k|m)?)\s+(?:veces compartid[oa]|compartid[oa]s?|shares?)$/i);
+            if (m) out.compartidos = Math.max(out.compartidos, numero(m[1]));
+        }
+        for (const el of card.querySelectorAll('[aria-label]')) {
+            const a = el.getAttribute('aria-label') || '';
+            let m = a.match(/^(?:Todas las reacciones|All reactions):?\s*(.+)$/i);
+            if (m) { out.reacciones = Math.max(out.reacciones, numero(m[1])); continue; }
+            m = a.match(/^(\d[\d.,]*\s*(?:mil|k|m)?)\s+comentarios?$/i);
+            if (m) out.comentarios = Math.max(out.comentarios, numero(m[1]));
+        }
+        return out;
+    }
+    window.__td = { urlYFecha, metricas };
 }"""
 
 
@@ -136,6 +168,22 @@ def _fecha_iso_externa(valor: str) -> Tuple[str, bool]:
         return "", False
     vieja = (datetime.now() - dt).total_seconds() > MAX_HORAS_ANTIGUEDAD * 3600
     return dt.isoformat(timespec="seconds"), vieja
+
+
+def _metricas_tweet(art) -> Dict[str, int]:
+    """Respuestas, reposts y me gusta de un tweet (desde el aria-label de cada botón)."""
+    from config_pba import parsear_numero_red
+
+    out = {"comentarios": 0, "compartidos": 0, "reacciones": 0}
+    for testid, clave in (("reply", "comentarios"), ("retweet", "compartidos"), ("unretweet", "compartidos"),
+                          ("like", "reacciones"), ("unlike", "reacciones")):
+        try:
+            el = art.locator(f'[data-testid="{testid}"]').first
+            if el.count():
+                out[clave] = max(out[clave], parsear_numero_red(el.get_attribute("aria-label") or ""))
+        except Exception:
+            pass
+    return out
 
 
 def _url_grupo_cronologica(url: str) -> str:
@@ -613,7 +661,8 @@ def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> Lis
                     texto: texto,
                     url: directUrl,
                     imgUrl: imgUrl,
-                    fechaTxt: fechaTxt
+                    fechaTxt: fechaTxt,
+                    metricas: window.__td.metricas(card)
                 });
             }
 
@@ -655,7 +704,8 @@ def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> Lis
                 "texto": texto_con_comentarios,
                 "comentarios": comentarios,
                 "imagen_url": item.get("imgUrl", ""),
-                "fecha_publicacion": fecha_iso
+                "fecha_publicacion": fecha_iso,
+                "metricas": item.get("metricas") or {}
             })
             if len(posteos) >= max_items:
                 break
@@ -814,6 +864,8 @@ def extraer_posteos_twitter(page, url_busqueda: str, max_items: int = 8, verbose
                         _descartar(f"más viejo que {MAX_HORAS_ANTIGUEDAD} h", texto)
                         continue
 
+                metricas = _metricas_tweet(art)
+
                 img_el = art.locator('div[data-testid="tweetPhoto"] img').first
                 img_url = img_el.get_attribute("src") if img_el.count() else ""
 
@@ -832,7 +884,8 @@ def extraer_posteos_twitter(page, url_busqueda: str, max_items: int = 8, verbose
                     "texto": texto_con_comentarios,
                     "comentarios": comentarios_tw,
                     "imagen_url": img_url,
-                    "fecha_publicacion": fecha_iso
+                    "fecha_publicacion": fecha_iso,
+                    "metricas": metricas
                 })
                 if verbose:
                     print(f"    ✓ {autor}: {texto[:90]!r}")
@@ -978,7 +1031,7 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
                         }
                     }
 
-                    out.push({ autor, texto: msg, directUrl, imgUrl, fechaTxt, comments: comments.slice(0, 4) });
+                    out.push({ autor, texto: msg, directUrl, imgUrl, fechaTxt, metricas: window.__td.metricas(card), comments: comments.slice(0, 4) });
                 }
                 return out;
             }""")
@@ -1035,7 +1088,8 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
                     "partido": partido_det,
                     "categoria": g_info.get("categoria", "seguridad"),
                     "pasada": "grupos_vecinales",
-                    "fecha_publicacion": fecha_iso
+                    "fecha_publicacion": fecha_iso,
+                    "metricas": it.get("metricas") or {}
                 })
                 items_grupo += 1
                 if items_grupo >= max_items_por_grupo:
@@ -1143,7 +1197,7 @@ def extraer_posteos_referentes_policiales(page, max_items: int = 5) -> List[Dict
                         }
                     }
 
-                    out.push({ autor, texto: msg, directUrl, imgUrl, fechaTxt, comments: comments.slice(0, 4) });
+                    out.push({ autor, texto: msg, directUrl, imgUrl, fechaTxt, metricas: window.__td.metricas(card), comments: comments.slice(0, 4) });
                 }
                 return out;
             }""")
@@ -1197,7 +1251,8 @@ def extraer_posteos_referentes_policiales(page, max_items: int = 5) -> List[Dict
                     "partido": partido_det,
                     "categoria": "seguridad",
                     "pasada": "referentes_policiales",
-                    "fecha_publicacion": fecha_iso
+                    "fecha_publicacion": fecha_iso,
+                    "metricas": it.get("metricas") or {}
                 })
                 if len(posteos) >= max_items:
                     break
@@ -1262,7 +1317,7 @@ def extraer_posteos_facebook_amigos(page, max_items: int = 5) -> List[Dict[str, 
                     }
                 }
 
-                out.push({ autor, texto, imgUrl, directUrl, fechaTxt });
+                out.push({ autor, texto, imgUrl, directUrl, fechaTxt, metricas: window.__td.metricas(card) });
             }
             return out;
         }""")
@@ -1317,7 +1372,8 @@ def extraer_posteos_facebook_amigos(page, max_items: int = 5) -> List[Dict[str, 
                 "partido": partido_det,
                 "categoria": "sociales_servicios",
                 "pasada": "feed_amigos",
-                "fecha_publicacion": fecha_iso
+                "fecha_publicacion": fecha_iso,
+                "metricas": it.get("metricas") or {}
             })
             if len(posteos) >= max_items:
                 break
@@ -1499,6 +1555,15 @@ def extraer_posteos_instagram(page, max_items: int = 6) -> List[Dict[str, Any]]:
     return posteos
 
 
+def _hechos_importantes_edicion(edicion_id) -> List[Dict[str, Any]]:
+    try:
+        from pdf_service import obtener_hechos_importantes
+        return obtener_hechos_importantes(edicion_id=edicion_id, max_hechos=3)
+    except Exception as e:
+        print("Aviso: no se pudieron calcular los hechos importantes:", e)
+        return []
+
+
 def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
     """
     Ejecuta el ciclo de búsquedas en Facebook, X e Instagram con tu sesión abierta:
@@ -1660,6 +1725,7 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
                     "nombres_propios": [n["nombre"] for n in nombres],
                     "hallazgos_destacados": [dict(h) for h in hallazgos_dest],
                     "relevamiento_grupos": [dict(g) for g in grupos_dest],
+                    "hechos_importantes": _hechos_importantes_edicion(edicion_id),
                 }
                 print("📲 Enviando reporte y PDF a Telegram...")
                 res_tg = enviar_alerta_telegram(datos_edicion, ruta_pdf=ruta_pdf or "")

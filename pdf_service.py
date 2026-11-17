@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from database import get_conn
 from clustering_service import agrupar_en_clusters
 from config_pba import (
+    HORAS_VENTANA_REPLICAS,
     MAX_HORAS_ANTIGUEDAD,
     describir_fecha,
     es_tema_excluido,
@@ -101,6 +102,65 @@ def recortar_texto_limpio(texto: str, max_chars: int = 140) -> str:
 
 def limpiar_contexto_nombre(texto: str, max_chars: int = 140) -> str:
     return recortar_texto_limpio(texto, max_chars=max_chars)
+
+
+def agrupar_con_contexto(vigentes: List[Dict[str, Any]], edicion_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Agrupa los hechos. Si es el reporte de una edición, suma como contexto las
+    publicaciones de las últimas HORAS_VENTANA_REPLICAS horas de otras ediciones: así,
+    si la misma noticia ya la publicaron otros medios, cuenta como réplica. Solo se
+    devuelven los hechos que tienen al menos una publicación de esta edición."""
+    if not edicion_id:
+        return agrupar_en_clusters(vigentes)
+
+    corte_iso = (datetime.now() - timedelta(hours=HORAS_VENTANA_REPLICAS)).isoformat(timespec="seconds")
+    conn = get_conn()
+    filas = conn.execute(
+        "SELECT * FROM hallazgos WHERE fecha_deteccion >= ? AND edicion_id != ? AND descartado = 0",
+        (corte_iso, edicion_id),
+    ).fetchall()
+    conn.close()
+    contexto, _ = clasificar_descartes_y_vigentes([dict(f) for f in filas])
+    for c in contexto:
+        c["_contexto"] = True
+
+    clusters = agrupar_en_clusters(vigentes + contexto)
+    return [c for c in clusters if any(not it.get("_contexto") for it in c["hallazgos_relacionados"])]
+
+
+def obtener_hechos_importantes(
+    edicion_id: Optional[int] = None, horas_atras: Optional[int] = None, max_hechos: int = 3
+) -> List[Dict[str, Any]]:
+    """Los hechos más importantes (mismo criterio que el PDF), resumidos para Telegram."""
+    conn = get_conn()
+    if horas_atras:
+        corte_iso = (datetime.now() - timedelta(hours=horas_atras)).isoformat(timespec="seconds")
+        filas = conn.execute("SELECT * FROM hallazgos WHERE fecha_deteccion >= ?", (corte_iso,)).fetchall()
+    else:
+        filas = conn.execute("SELECT * FROM hallazgos WHERE edicion_id = ?", (edicion_id,)).fetchall()
+    conn.close()
+    vigentes, _ = clasificar_descartes_y_vigentes([dict(f) for f in filas])
+    clusters = agrupar_con_contexto(vigentes, edicion_id if not horas_atras else None)
+    salida = []
+    for c in clusters[:max_hechos]:
+        salida.append({
+            "clima": c["clima_estado"],
+            "partido": c["partido"],
+            "titulo": c["titulo_cluster"],
+            "repercusion": c["repercusion"]["nivel"],
+            "motivos": resumen_repercusion(c),
+            "url": c["urls"][0] if c.get("urls") else "",
+            "comentario": (c.get("comentarios_cluster") or [""])[0],
+        })
+    return salida
+
+
+def resumen_repercusion(cluster: Dict[str, Any]) -> str:
+    """Texto corto con los motivos de importancia: '3 fuentes distintas · 240 comentarios'."""
+    rep = cluster.get("repercusion") or {}
+    motivos = rep.get("motivos") or []
+    if not motivos:
+        return "Una sola fuente, sin repercusión registrada"
+    return " · ".join(motivos)
 
 
 def html_comentarios(comentarios: List[Any], max_items: int = 2, max_chars: int = 90) -> str:
@@ -245,8 +305,9 @@ def generar_html_reporte(
     raw_items = [dict(r) for r in hallazgos_rows]
     vigentes_items, descartados_items = clasificar_descartes_y_vigentes(raw_items)
 
-    # Agrupar vigentes en clusters
-    clusters_vigentes = agrupar_en_clusters(vigentes_items)
+    # Agrupar vigentes en clusters (en una edición se suman las publicaciones de las
+    # últimas horas para detectar si la misma noticia ya se replicó en otras fuentes)
+    clusters_vigentes = agrupar_con_contexto(vigentes_items, edicion_id if not horas_atras else None)
 
     # Conteo de métricas para la barra de 5 casilleros
     total_relevadas = len(vigentes_items) + len(descartados_items)
@@ -261,7 +322,7 @@ def generar_html_reporte(
         clima_txt = "EN ALERTA"
         clima_color = "#dc2626"
         clima_bg = "#dc2626"
-    elif clusters_vigentes and any("pueblada" in c["titulo_cluster"].lower() or "conflicto" in c["titulo_cluster"].lower() for c in clusters_vigentes):
+    elif any(c["clima_estado"] == "MODERADO" for c in clusters_vigentes):
         clima_txt = "MODERADO"
         clima_color = "#d97706"
         clima_bg = "#d97706"
@@ -840,7 +901,7 @@ def generar_html_reporte(
         </tr>
         """
     else:
-        for c in clusters_vigentes[:3]:
+        for c in clusters_vigentes[:5]:
             pill_class = (
                 "pill-clima-alerta" if c["clima_estado"] == "EN ALERTA"
                 else ("pill-clima-moderado" if c["clima_estado"] == "MODERADO" else "pill-clima-bueno")
@@ -848,10 +909,12 @@ def generar_html_reporte(
             eje_str = EJE_LABELS.get(c["categoria"], c["categoria"])
             primera_fuente = c.get("fuentes_nombres", ["Fuente"])[0] if c.get("fuentes_nombres") else "Redes"
             primera_url = c["urls"][0] if c.get("urls") else ""
+            otras = len(c.get("fuentes_nombres") or []) - 1
+            otras_txt = f'<div class="sub-eje">y {otras} fuente{"s" if otras > 1 else ""} más</div>' if otras > 0 else ""
             if primera_url and es_url_publicacion_valida(primera_url):
-                fuente_td = f'{primera_fuente} · <a class="link-inline" href="{primera_url}" target="_blank">ver ↗</a>'
+                fuente_td = f'{html_lib.escape(primera_fuente)} · <a class="link-inline" href="{primera_url}" target="_blank">ver ↗</a>{otras_txt}'
             else:
-                fuente_td = f'{primera_fuente}'
+                fuente_td = f'{html_lib.escape(primera_fuente)}{otras_txt}'
 
             reaccion_html = html_comentarios(c.get("comentarios_cluster") or [], max_items=2, max_chars=80)
             fecha_hecho = describir_fecha(c["representante"].get("fecha_publicacion_dt"))
@@ -862,6 +925,7 @@ def generar_html_reporte(
           <td>
             {html_lib.escape(c['titulo_cluster'])}
             <div class="sub-eje">Eje: {eje_str} · {html_lib.escape(fecha_hecho)}</div>
+            <div class="sub-eje"><strong>Repercusión {html_lib.escape(c['repercusion']['nivel'])}:</strong> {html_lib.escape(resumen_repercusion(c))}</div>
           </td>
           <td>{reaccion_html}</td>
           <td>{fuente_td}</td>
@@ -871,7 +935,7 @@ def generar_html_reporte(
     html += f"""
       </tbody>
     </table>
-    <div class="clarification-note">Fechas: tomadas de la propia publicación (Facebook / Instagram) o del ID de X. "Fecha no verificada" = la red no la mostró legible. Se descartan publicaciones de más de {MAX_HORAS_ANTIGUEDAD} h.</div>
+    <div class="clarification-note">Fechas: tomadas de la propia publicación (Facebook / Instagram) o del ID de X. "Fecha no verificada" = la red no la mostró legible. Se descartan publicaciones de más de {MAX_HORAS_ANTIGUEDAD} h.<br/>Orden por importancia: gravedad del hecho y repercusión (cuántas fuentes distintas lo publicaron en las últimas {HORAS_VENTANA_REPLICAS} h, comentarios y compartidos). Una repercusión MEDIA lleva un hecho a MODERADO como mínimo; una ALTA lo sube un nivel.</div>
 
     <!-- DESTACADO -->
     <div class="section-title">Destacado</div>
@@ -957,6 +1021,7 @@ def generar_html_reporte(
           <div class="destacado-meta">
             <span class="pill-clima {pill_dest_class}" style="font-size: 6.5pt; padding: 1px 4px;">{clima_dest}</span>
             {html_lib.escape(fuente_destacada)} · {html_lib.escape(plataforma_dest)} · {html_lib.escape(fecha_pub_dest)} · <a class="link-inline" href="{url_destacada}">Abrir publicación original ↗</a>
+            <br/><strong>Repercusión {html_lib.escape(destacado_item['repercusion']['nivel'])}:</strong> {html_lib.escape(resumen_repercusion(destacado_item))}
           </div>
           <div class="destacado-desc">
             {html_lib.escape(desc_limpia)}

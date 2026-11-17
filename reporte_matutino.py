@@ -14,6 +14,15 @@ from pdf_service import crear_reporte_pdf_ultimas_horas
 from telegram_service import enviar_alerta_telegram
 
 
+def _hechos_importantes(horas_atras: int):
+    try:
+        from pdf_service import obtener_hechos_importantes
+        return obtener_hechos_importantes(horas_atras=horas_atras, max_hechos=3)
+    except Exception as e:
+        print("Aviso: no se pudieron calcular los hechos importantes:", e)
+        return []
+
+
 def ejecutar_reporte_matutino(horas_atras: int = 12):
     print(f"\n=======================================================")
     print(f"🌅 INICIANDO REPORTE MATUTINO (Últimas {horas_atras} horas)")
@@ -55,6 +64,7 @@ def ejecutar_reporte_matutino(horas_atras: int = 12):
         "convocatorias": [dict(c) for c in convocatorias],
         "nombres_propios": [n["nombre"] for n in nombres if len(n["nombre"]) <= 25],
         "hallazgos_destacados": [dict(h) for h in hallazgos_12hs[:3]],
+        "hechos_importantes": _hechos_importantes(horas_atras),
     }
 
     # 4. Enviar a Telegram

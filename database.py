@@ -24,6 +24,8 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "termometro_digital.db")
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    if not _migrado:
+        _migrar_columnas(conn)
     return conn
 
 
@@ -113,7 +115,32 @@ def init_db() -> None:
         """
     )
     conn.commit()
+    _migrar_columnas(conn)
     conn.close()
+
+
+# Columnas agregadas después de la primera versión (bases existentes se actualizan solas)
+_COLUMNAS_NUEVAS_HALLAZGOS = {
+    "num_comentarios": "INTEGER DEFAULT 0",
+    "num_compartidos": "INTEGER DEFAULT 0",
+    "num_reacciones": "INTEGER DEFAULT 0",
+}
+_migrado = False
+
+
+def _migrar_columnas(conn: sqlite3.Connection) -> None:
+    global _migrado
+    try:
+        existentes = {r[1] for r in conn.execute("PRAGMA table_info(hallazgos)").fetchall()}
+        if not existentes:
+            return
+        for col, tipo in _COLUMNAS_NUEVAS_HALLAZGOS.items():
+            if col not in existentes:
+                conn.execute(f"ALTER TABLE hallazgos ADD COLUMN {col} {tipo}")
+        conn.commit()
+        _migrado = True
+    except sqlite3.Error:
+        pass
 
 
 _PARAMS_IDENTIDAD_URL = ("fbid", "story_fbid", "id", "v")
@@ -227,6 +254,7 @@ def insertar_hallazgo(datos: Dict[str, Any]) -> bool:
     titulo = datos.get("titulo", "")
     texto = datos.get("texto", "")
     u_hash = compute_url_hash(url, titulo, texto)
+    metricas = datos.get("metricas") or {}
 
     try:
         cur.execute(
@@ -235,8 +263,9 @@ def insertar_hallazgo(datos: Dict[str, Any]) -> bool:
                 edicion_id, fecha_deteccion, fecha_publicacion, fuente, url, url_hash,
                 titulo, texto, autor, categoria, termino_detectado, variante_usada,
                 partido, anclaje_usado, pasada, es_convocatoria, modificadores_agenda,
-                nombres_propios, relevancia, imagen_url, comentarios_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                nombres_propios, relevancia, imagen_url, comentarios_json,
+                num_comentarios, num_compartidos, num_reacciones
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 datos.get("edicion_id", 1),
@@ -260,6 +289,9 @@ def insertar_hallazgo(datos: Dict[str, Any]) -> bool:
                 datos.get("relevancia", 70),
                 datos.get("imagen_url", ""),
                 json.dumps(datos.get("comentarios", []), ensure_ascii=False),
+                int(metricas.get("comentarios") or 0),
+                int(metricas.get("compartidos") or 0),
+                int(metricas.get("reacciones") or 0),
             ),
         )
         conn.commit()
@@ -275,6 +307,12 @@ def insertar_hallazgo(datos: Dict[str, Any]) -> bool:
             if datos.get("comentarios"):
                 updates.append("comentarios_json = ?")
                 params.append(json.dumps(datos.get("comentarios", []), ensure_ascii=False))
+            # La misma publicación vista más tarde: actualizar su repercusión
+            for col, clave in (("num_comentarios", "comentarios"), ("num_compartidos", "compartidos"), ("num_reacciones", "reacciones")):
+                valor = int(metricas.get(clave) or 0)
+                if valor:
+                    updates.append(f"{col} = MAX(COALESCE({col}, 0), ?)")
+                    params.append(valor)
             if updates:
                 params.append(u_hash)
                 cur.execute(f"UPDATE hallazgos SET {', '.join(updates)} WHERE url_hash = ?", params)

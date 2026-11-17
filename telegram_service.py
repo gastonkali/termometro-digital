@@ -44,6 +44,22 @@ def formatear_mensaje_telegram(datos_edicion: Dict[str, Any]) -> str:
         ""
     ]
 
+    hechos = datos_edicion.get("hechos_importantes", [])
+    if hechos:
+        iconos = {"EN ALERTA": "🔴", "MODERADO": "🟠", "BUENO": "🟢"}
+        msg.append("🔥 *HECHOS MÁS IMPORTANTES (por gravedad y repercusión):*")
+        for h in hechos:
+            url = h.get("url") or ""
+            link_str = f" [ver ↗]({url})" if (url and es_url_publicacion_valida(url)) else ""
+            msg.append(
+                f"{iconos.get(h.get('clima'), '•')} *[{h.get('partido', 'PBA')}]* "
+                f"{recortar_telegram(h.get('titulo', ''), 110)}{link_str}"
+            )
+            msg.append(f"   ↳ Repercusión {h.get('repercusion', 'BAJA')}: {h.get('motivos', '')}")
+            if h.get("comentario"):
+                msg.append(f"   💬 _{recortar_telegram(h['comentario'], 100)}_")
+        msg.append("")
+
     relevamiento = datos_edicion.get("relevamiento_grupos", [])
     if relevamiento:
         msg.append(f"👥 *RELEVAMIENTO DE TUS GRUPOS Y CONTACTOS ({len(relevamiento)}):*")
@@ -65,7 +81,8 @@ def formatear_mensaje_telegram(datos_edicion: Dict[str, Any]) -> str:
             msg.append(f"• *[{partido}]* {tit}")
         msg.append("")
 
-    hallazgos_destacados = datos_edicion.get("hallazgos_destacados", [])
+    # La vista previa cruda (sin filtros) solo si no hay hechos ya ordenados por importancia
+    hallazgos_destacados = [] if hechos else datos_edicion.get("hallazgos_destacados", [])
     if hallazgos_destacados:
         msg.append("📡 *VISTA PREVIA DE RECLAMOS VECINALES PBA:*")
         for h in hallazgos_destacados[:3]:

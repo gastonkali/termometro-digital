@@ -11,7 +11,94 @@ from typing import Any, Dict, List, Tuple
 from collections import Counter
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from config_pba import quitar_tildes, STOPWORDS_ES, resolver_partido_geografico_preciso, resolver_eje_tematico_preciso, texto_sin_comentarios
+from config_pba import (
+    PUNTOS_COMENTARIOS,
+    PUNTOS_COMPARTIDOS,
+    PUNTOS_FUENTES_DISTINTAS,
+    REPERCUSION_ALTA,
+    REPERCUSION_MEDIA,
+    STOPWORDS_ES,
+    quitar_tildes,
+    resolver_eje_tematico_preciso,
+    resolver_partido_geografico_preciso,
+    texto_sin_comentarios,
+)
+
+NIVELES_CLIMA = ["BUENO", "MODERADO", "EN ALERTA"]
+
+
+def _puntos_escalon(valor: int, escalones) -> int:
+    puntos = 0
+    for minimo, pts in escalones:
+        if valor >= minimo:
+            puntos = pts
+    return puntos
+
+
+def _entero(v: Any) -> int:
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def calcular_repercusion(items: List[Dict[str, Any]], fuentes: List[str]) -> Dict[str, Any]:
+    """Repercusión de un hecho: en cuántas fuentes distintas se replicó y cuánta
+    conversación generó (comentarios, compartidos). Devuelve puntaje, nivel y motivos."""
+    comentarios = 0
+    compartidos = 0
+    reacciones = 0
+    for it in items:
+        leidos = it.get("comentarios") or it.get("comentarios_json") or []
+        if isinstance(leidos, str):
+            try:
+                leidos = json.loads(leidos)
+            except Exception:
+                leidos = []
+        comentarios += max(_entero(it.get("num_comentarios")), len(leidos) if isinstance(leidos, list) else 0)
+        compartidos += _entero(it.get("num_compartidos"))
+        reacciones += _entero(it.get("num_reacciones"))
+
+    n_fuentes = len(fuentes)
+    puntos = (
+        _puntos_escalon(n_fuentes, PUNTOS_FUENTES_DISTINTAS)
+        + _puntos_escalon(comentarios, PUNTOS_COMENTARIOS)
+        + _puntos_escalon(compartidos, PUNTOS_COMPARTIDOS)
+    )
+    if puntos >= REPERCUSION_ALTA:
+        nivel = "ALTA"
+    elif puntos >= REPERCUSION_MEDIA:
+        nivel = "MEDIA"
+    else:
+        nivel = "BAJA"
+
+    motivos = []
+    if n_fuentes > 1:
+        motivos.append(f"{n_fuentes} fuentes distintas")
+    if comentarios:
+        motivos.append(f"{comentarios} comentario{'s' if comentarios != 1 else ''}")
+    if compartidos:
+        motivos.append(f"{compartidos} compartidos")
+    return {
+        "puntaje": puntos,
+        "nivel": nivel,
+        "fuentes": n_fuentes,
+        "comentarios": comentarios,
+        "compartidos": compartidos,
+        "reacciones": reacciones,
+        "motivos": motivos,
+    }
+
+
+def escalar_clima(clima_base: str, nivel_repercusion: str) -> str:
+    """La repercusión nunca baja la gravedad, solo la sube:
+    MEDIA lleva un hecho BUENO a MODERADO; ALTA sube un nivel (hasta EN ALERTA)."""
+    idx = NIVELES_CLIMA.index(clima_base) if clima_base in NIVELES_CLIMA else 0
+    if nivel_repercusion == "ALTA":
+        idx = min(idx + 1, 2)
+    elif nivel_repercusion == "MEDIA" and idx == 0:
+        idx = 1
+    return NIVELES_CLIMA[idx]
 
 
 TEMAS_CLAVE_CONOCIDOS = [
@@ -120,25 +207,20 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
                     grupo_indices.append(j)
 
         items_cluster = [hallazgos[idx] for idx in grupo_indices]
-        items_cluster.sort(key=lambda x: (x.get("es_convocatoria", 0), x.get("relevancia", 0), len(x.get("texto", ""))), reverse=True)
+        # Representante: la publicación con más conversación (su link es el que se muestra)
+        items_cluster.sort(key=lambda x: (x.get("es_convocatoria", 0), _entero(x.get("num_comentarios")), x.get("relevancia", 0), len(x.get("texto", ""))), reverse=True)
         rep = items_cluster[0]
 
+        # Fuentes distintas = autores/medios distintos. (Antes había nombres fijos por
+        # texto: cualquier post con "CTA" en mayúsculas —p. ej. "DIRECTA"— se contaba como
+        # la misma fuente, y la réplica en varios medios quedaba subestimada.)
         fuentes_distintas = []
         vistas_fuentes = set()
         for it in items_cluster:
-            autor_fuente = it.get("autor") or it.get("fuente") or "Fuente vecinal"
-            txt = f"{it.get('titulo', '')} {it.get('texto', '')}"
-            if "El Vigía" in txt or "Agencia El Vigía" in txt:
-                autor_fuente = "Agencia El Vigía"
-            elif "Periodismo_Movil" in txt:
-                autor_fuente = "Periodismo_Movil"
-            elif "Marcelo Fava" in txt:
-                autor_fuente = "Marcelo Fava"
-            elif "CTA" in txt:
-                autor_fuente = "CTA PBA (Facebook)"
-
-            if autor_fuente not in vistas_fuentes:
-                vistas_fuentes.add(autor_fuente)
+            autor_fuente = (it.get("autor") or it.get("fuente") or "Fuente vecinal").strip()
+            clave_fuente = quitar_tildes(autor_fuente.lower())
+            if clave_fuente not in vistas_fuentes:
+                vistas_fuentes.add(clave_fuente)
                 fuentes_distintas.append(autor_fuente)
 
         partidos_set = set()
@@ -151,12 +233,21 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
         comb_total = " ".join([f"{it.get('titulo', '')} {it.get('texto', '')}" for it in items_cluster]).lower()
         
         # Determinar estado de clima
-        if any(w in comb_total for w in ["corte total", "corte de autopista", "cacerolazo", "48 h sin luz", "48 horas sin luz", "balacera"]):
+        comb_norm = quitar_tildes(comb_total)
+        if any(w in comb_norm for w in ["corte total", "corte de autopista", "cacerolazo", "48 h sin luz", "48 horas sin luz", "balacera", "pueblada", "saqueo", "incendiaron la comisaria"]):
             clima_est = "EN ALERTA"
-        elif any(w in comb_total for w in ["pueblada", "puestos de trabajo", "despidos", "marcha", "corte de calle", "sin luz"]):
+        elif any(w in comb_norm for w in [
+            "puestos de trabajo", "despidos", "marcha", "corte de calle", "corte de ruta", "sin luz",
+            "cortaron la calle", "cortan la calle", "cortaron la ruta", "cortan la ruta", "piquete",
+            "protesta", "movilizacion", "autoconvocados", "asamblea vecinal", "ruidazo",
+        ]):
             clima_est = "MODERADO"
         else:
             clima_est = "BUENO"
+
+        repercusion = calcular_repercusion(items_cluster, fuentes_distintas)
+        clima_base = clima_est
+        clima_est = escalar_clima(clima_base, repercusion["nivel"])
 
         titulo_cluster = tema_i or rep.get("titulo", "Reclamo vecinal reportado")
         if "corte" in titulo_cluster.lower() and "autopista" in titulo_cluster.lower() and "luz" in titulo_cluster.lower():
@@ -218,16 +309,19 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
             "total_fuentes": len(fuentes_distintas),
             "reaccion_vecinal": reaccion,
             "comentarios_cluster": todos_comentarios,
+            "repercusion": repercusion,
+            "clima_base": clima_base,
             "representante": rep,
             "hallazgos_relacionados": items_cluster,
-            "urls": list(set(it.get("url", "") for it in items_cluster if it.get("url")))
+            # El link del representante primero (antes el orden era aleatorio por set())
+            "urls": list(dict.fromkeys(it.get("url", "") for it in items_cluster if it.get("url")))
         })
 
+    # Orden: gravedad final, luego repercusión (réplicas + comentarios + compartidos)
     clusters.sort(key=lambda c: (
-        2 if c["clima_estado"] == "EN ALERTA" else (1 if c["clima_estado"] == "MODERADO" else 0),
-        c["total_fuentes"],
-        c["total_menciones"],
-        # A igual gravedad, primero lo que más reacción vecinal generó
-        len(c["comentarios_cluster"]),
+        NIVELES_CLIMA.index(c["clima_estado"]),
+        c["repercusion"]["puntaje"],
+        c["repercusion"]["fuentes"],
+        c["repercusion"]["comentarios"],
     ), reverse=True)
     return clusters

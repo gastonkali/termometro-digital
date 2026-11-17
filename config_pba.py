@@ -225,6 +225,47 @@ SENALES_CONFLICTO: List[str] = [
 # Antigüedad máxima (en horas) de una publicación para considerarla vigente.
 MAX_HORAS_ANTIGUEDAD: int = int(os.getenv("TERMOMETRO_MAX_HORAS", "72"))
 
+# ---------------------------------------------------------------------------
+# IMPORTANCIA DE UN HECHO (editable)
+# ---------------------------------------------------------------------------
+# Puntaje de "repercusión" = réplicas en fuentes distintas + comentarios + compartidos.
+# Se suman los puntos del escalón más alto alcanzado en cada fila.
+PUNTOS_FUENTES_DISTINTAS: List[Tuple[int, int]] = [  # (mínimo de fuentes, puntos)
+    (2, 15), (3, 30), (4, 45), (6, 60),
+]
+PUNTOS_COMENTARIOS: List[Tuple[int, int]] = [  # (mínimo de comentarios, puntos)
+    (30, 10), (100, 20), (300, 30), (1000, 45),
+]
+PUNTOS_COMPARTIDOS: List[Tuple[int, int]] = [  # (mínimo de compartidos/reposts, puntos)
+    (50, 10), (300, 20), (1000, 30),
+]
+# Umbrales de repercusión
+REPERCUSION_MEDIA: int = 25   # ej: 3 fuentes distintas, o 1000 comentarios
+REPERCUSION_ALTA: int = 50    # ej: 3 fuentes + 100 comentarios, o 4 fuentes + 30 comentarios
+# Ventana (horas) para buscar la misma noticia en otras fuentes al armar cada edición
+HORAS_VENTANA_REPLICAS: int = int(os.getenv("TERMOMETRO_HORAS_REPLICAS", "24"))
+
+
+def parsear_numero_red(texto: str) -> int:
+    """Convierte contadores de redes a número: "245", "1.234", "1,2 mil", "3,4 k", "2 M"."""
+    if not texto:
+        return 0
+    t = quitar_tildes(str(texto).lower()).replace("\xa0", " ").strip()
+    m = re.search(r"(\d[\d.,]*)\s*(mil|k|mill|millones|m)?\b", t)
+    if not m:
+        return 0
+    num, suf = m.group(1), m.group(2) or ""
+    mult = 1
+    if suf in ("mil", "k"):
+        mult = 1000
+    elif suf in ("m", "mill", "millones"):
+        mult = 1_000_000
+    if mult > 1:
+        valor = float(num.replace(".", "").replace(",", ".")) if "," in num else float(num)
+    else:
+        valor = float(num.replace(".", "").replace(",", ""))
+    return int(round(valor * mult))
+
 # Anclajes geográficos generales de 1ra pasada
 ANCLAJES_GENERALES_PBA: List[str] = [
     "provincia de Buenos Aires",
