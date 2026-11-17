@@ -18,6 +18,7 @@ from config_pba import (
     REPERCUSION_ALTA,
     REPERCUSION_MEDIA,
     STOPWORDS_ES,
+    es_ataque_a_autoridad,
     quitar_tildes,
     resolver_eje_tematico_preciso,
     resolver_partido_geografico_preciso,
@@ -234,12 +235,17 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
         
         # Determinar estado de clima
         comb_norm = quitar_tildes(comb_total)
-        if any(w in comb_norm for w in ["corte total", "corte de autopista", "cacerolazo", "48 h sin luz", "48 horas sin luz", "balacera", "pueblada", "saqueo", "incendiaron la comisaria"]):
+        if es_ataque_a_autoridad(comb_norm) or any(w in comb_norm for w in [
+            "corte total", "corte de autopista", "cacerolazo", "48 h sin luz", "48 horas sin luz",
+            "balacera", "pueblada", "saqueo", "incendiaron la comisaria", "toma de rehenes", "tiroteo",
+        ]):
             clima_est = "EN ALERTA"
         elif any(w in comb_norm for w in [
             "puestos de trabajo", "despidos", "marcha", "corte de calle", "corte de ruta", "sin luz",
             "cortaron la calle", "cortan la calle", "cortaron la ruta", "cortan la ruta", "piquete",
             "protesta", "movilizacion", "autoconvocados", "asamblea vecinal", "ruidazo",
+            "homicidio", "asesinato", "asesinaron", "femicidio", "crimen", "sicario", "secuestro",
+            "complot", "atentado",
         ]):
             clima_est = "MODERADO"
         else:

@@ -282,7 +282,11 @@ def clasificar_hallazgo(
         termino_detectado = "vecinos (pasada abierta)" if pasada == "pasada_abierta" else "señal de conflicto"
         variante_usada = termino_detectado
 
-    partido = detectar_partido_en_texto(combinado, partido_objetivo)
+    # El lugar sale primero del cuerpo (el título puede traer el nombre del medio, ej.
+    # "Diario El Norte - San Nicolás: Robo en Quilmes")
+    partido = detectar_partido_en_texto(texto_sin_comentarios(texto), "")
+    if partido == "Provincia de Buenos Aires":
+        partido = detectar_partido_en_texto(combinado, partido_objetivo)
     modificadores = detectar_modificadores_agenda(combinado)
     es_convocatoria = len(modificadores) > 0
     nombres_propios = extraer_nombres_propios(combinado)

@@ -174,7 +174,21 @@ PARTIDOS_NOMBRE_COMPARTIDO: Set[str] = {
     "Maipú", "Rivadavia", "General Alvear", "Junín", "Colón", "Lavalle",
     "General Las Heras", "San Pedro", "Mercedes", "Pila", "Monte", "Salto",
     "General Paz", "Rojas", "Lobos", "Azul", "La Costa", "Puan",
+    "Avellaneda", "Pilar", "Moreno", "Escobar",  # Avellaneda (Santa Fe), Pilar (Córdoba)...
 }
+
+# Personas o lugares de otras provincias que contienen el nombre de un partido.
+# Se borran del texto antes de ubicar la publicación (editable).
+NOMBRES_NO_GEOGRAFICOS: List[str] = [
+    "ramon lanus", "miguel lanus", "guillermo moreno", "mariano moreno", "pablo escobar",
+    "avellaneda santa fe", "pilar cordoba", "lomas de zamora futbol",
+]
+
+
+def quitar_nombres_no_geograficos(texto_norm: str) -> str:
+    for n in NOMBRES_NO_GEOGRAFICOS:
+        texto_norm = re.sub(r"(?<![\wñ])" + re.escape(n) + r"(?![\wñ])", " ", texto_norm)
+    return texto_norm
 
 # ---------------------------------------------------------------------------
 # FILTROS DE TEMAS QUE NO INTERESAN (editables)
@@ -187,6 +201,20 @@ PATRONES_CLIMA: List[str] = [
     "alerta meteorologica", "alerta por tormentas", "alerta por lluvias", "smn",
     "servicio meteorologico", "pronostico", "tormenta", "tormentas", "lluvias intensas",
     "ciclogenesis", "ola de calor", "sensacion termica", "vientos fuertes",
+    "lluvias", "lluvias aisladas", "chaparrones", "pronostico extendido", "temperaturas",
+]
+
+# Deportes y espectáculos: se descartan salvo que hablen de violencia o incidentes
+# (ej. "balacera a la salida del partido" SÍ pasa).
+PATRONES_DEPORTES_ESPECTACULOS: List[str] = [
+    "basquet", "basquetbol", "liga nacional", "liga femenina", "torneo", "goleada", "golazo",
+    "primera nacional", "primera b", "primera c", "hockey", "voley", "rugby", "fixture",
+    "handball", "futsal", "campeonato", "medalla", "atletismo", "maraton", "seleccion argentina",
+    "recital", "cartelera", "estreno", "espectaculo", "show en vivo", "festival de musica",
+]
+EXCEPCIONES_VIOLENCIA: List[str] = [
+    "incidentes", "barra", "barras", "barrabrava", "balacera", "tiros", "heridos", "herido",
+    "muerto", "asesinado", "apunalado", "detenidos", "represion", "disturbios",
 ]
 
 # Avisos clasificados, permutas, búsquedas laborales, ventas: siempre se descartan.
@@ -220,7 +248,29 @@ SENALES_CONFLICTO: List[str] = [
     "sumario", "desafectado", "desafectaron", "traslado compulsivo", "horas cores",
     "polad", "recargo", "francos", "ioma", "policia herido", "efectivo herido",
     "murio un policia", "policia muerto",
+    # Hechos policiales / violencia (con conjugaciones: los títulos dicen "denunció", "asesinar")
+    "denuncio", "denunciaron", "matar", "mato", "asesinar", "asesinado", "asesinada",
+    "complot", "atentado", "atentaron", "amenaza", "amenazas", "amenazo", "amenazaron",
+    "amenazado", "sicario", "sicarios", "tiroteo", "balearon", "baleo", "apunalado",
+    "apuñalado", "acuchillado", "intento de homicidio", "crimen", "homicida", "arma",
+    "armas", "allanamiento", "allanamientos", "allanaron", "detenido", "detenidos",
+    "detenida", "detuvieron", "secuestraron", "extorsion", "extorsionaban", "toma de rehenes",
 ]
+
+# Ataques o amenazas contra autoridades: siempre se consideran EN ALERTA.
+# Ej: "plan para matar al intendente", "atentado contra el comisario", "amenazas al concejal".
+# El verbo tiene que ir seguido de "al / a la / contra el..." + el cargo, para no confundir
+# con "el intendente amenazó con..." o "el plan de obras del intendente".
+PATRON_ATAQUE_AUTORIDAD = re.compile(
+    r"\b(matar|asesinar|asesinato|atentado|atentar|balear|balearon|disparar|dispararon|amenaz\w*)\b"
+    r"\s+(?:\w+\s+){0,2}?(al|a la|contra el|contra la|a un|a una|a los|a las|contra)\s+"
+    r"(intendent[ea]s?|concejal\w*|comisari[oa]s?|diputad[oa]s?|senador\w*|gobernador\w*|ministr[oa]s?|"
+    r"juez|jueza|jueces|fiscal\w*|funcionari[oa]s?|jefe de policia|jefa de policia)\b"
+)
+
+
+def es_ataque_a_autoridad(texto: str) -> bool:
+    return bool(PATRON_ATAQUE_AUTORIDAD.search(quitar_tildes((texto or "").lower())))
 
 # Antigüedad máxima (en horas) de una publicación para considerarla vigente.
 MAX_HORAS_ANTIGUEDAD: int = int(os.getenv("TERMOMETRO_MAX_HORAS", "72"))
@@ -231,7 +281,7 @@ MAX_HORAS_ANTIGUEDAD: int = int(os.getenv("TERMOMETRO_MAX_HORAS", "72"))
 # Puntaje de "repercusión" = réplicas en fuentes distintas + comentarios + compartidos.
 # Se suman los puntos del escalón más alto alcanzado en cada fila.
 PUNTOS_FUENTES_DISTINTAS: List[Tuple[int, int]] = [  # (mínimo de fuentes, puntos)
-    (2, 15), (3, 30), (4, 45), (6, 60),
+    (2, 15), (3, 30), (4, 45), (5, 50), (8, 65),
 ]
 PUNTOS_COMENTARIOS: List[Tuple[int, int]] = [  # (mínimo de comentarios, puntos)
     (30, 10), (100, 20), (300, 30), (1000, 45),
@@ -241,7 +291,7 @@ PUNTOS_COMPARTIDOS: List[Tuple[int, int]] = [  # (mínimo de compartidos/reposts
 ]
 # Umbrales de repercusión
 REPERCUSION_MEDIA: int = 25   # ej: 3 fuentes distintas, o 1000 comentarios
-REPERCUSION_ALTA: int = 50    # ej: 3 fuentes + 100 comentarios, o 4 fuentes + 30 comentarios
+REPERCUSION_ALTA: int = 50    # ej: 5 medios distintos, 3 fuentes + 100 comentarios, o 4 fuentes + 30 comentarios
 # Ventana (horas) para buscar la misma noticia en otras fuentes al armar cada edición
 HORAS_VENTANA_REPLICAS: int = int(os.getenv("TERMOMETRO_HORAS_REPLICAS", "24"))
 
@@ -563,7 +613,7 @@ def es_exclusion_geografica(texto: str, partido_objetivo: str = "") -> bool:
 
     # Verificar anclajes positivos explícitos de PBA (siempre por palabra completa:
     # antes "Salto" matcheaba dentro de "asalto" y "Pilar" dentro de "pilares").
-    t_norm = quitar_tildes(t_lower)
+    t_norm = quitar_nombres_no_geograficos(quitar_tildes(t_lower))
     tiene_anclaje_pba = False
 
     def _partido_sirve(p: str) -> bool:
@@ -606,7 +656,7 @@ def resolver_partido_geografico_preciso(texto: str, partido_sugerido: str = "") 
     3. Mapea localidades específicas (Sarandí, Bernal, Haedo, San Justo, Banfield, etc.) a su Partido real.
     4. Si no hay localidad, busca coincidencia exacta con los 135 partidos.
     """
-    t_norm = quitar_tildes(texto.lower())
+    t_norm = quitar_nombres_no_geograficos(quitar_tildes(texto.lower()))
 
     # Regla específica: Si es corte en Autopista Bs. As.-La Plata pero en Sarandí o Bernal
     if "autopista" in t_norm:
@@ -703,6 +753,10 @@ def es_tema_excluido(titulo: str, texto: str, autor: str = "") -> Tuple[bool, st
             "cortaron", "piquete", "cacerolazo", "marcha", "asamblea", "autoconvocados",
         )):
             return True, "Meteorología / clima sin reclamo asociado"
+
+    if any(contiene_frase(cuerpo, p) for p in PATRONES_DEPORTES_ESPECTACULOS):
+        if not any(contiene_frase(cuerpo, s) for s in EXCEPCIONES_VIOLENCIA):
+            return True, "Deportes / espectáculos sin hechos de violencia"
 
     return False, ""
 

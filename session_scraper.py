@@ -1607,6 +1607,16 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
     total_recolectados = []
 
     try:
+        # Fase 0: Medios (Google Noticias) — cubre los 135 partidos en cada corrida y trae
+        # el nombre del medio y la fecha exacta, para detectar réplicas en varios medios.
+        if os.getenv("TERMOMETRO_NOTICIAS", "1") != "0":
+            print("\n📰 Buscando en medios (Google Noticias)...")
+            try:
+                from news_service import recolectar_noticias
+                total_recolectados.extend(recolectar_noticias())
+            except Exception as e_news:
+                print(f"  [Noticias] No se pudo consultar Google Noticias: {e_news}")
+
         # Fase 1: Búsquedas públicas en Facebook y X
         for idx, item in enumerate(matriz, 1):
             print(f"\n[{idx}/{len(matriz)}] Buscando en Facebook: {item['fb_search_query']}...")
