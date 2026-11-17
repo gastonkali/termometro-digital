@@ -1473,71 +1473,81 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
     print(f"\n✓ Recolección finalizada. Total de publicaciones capturadas: {len(total_recolectados)}")
 
     if total_recolectados:
+        data_resp = {}
+        edicion_id = None
         try:
             resp = requests.post(API_INGEST_URL, json={
                 "modo": "sesion_abierta_playwright",
                 "posteos": total_recolectados
             }, timeout=15)
             data_resp = resp.json()
-            print("Resultado de ingesta en base local:", data_resp)
-
+            print("Resultado de ingesta en base local (vía API):", data_resp)
             edicion_id = data_resp.get("resultado", {}).get("edicion_id")
-            if edicion_id:
-                print(f"\n📄 Compilando reporte PDF para Edición #{edicion_id} con imágenes y comentarios...")
-                from pdf_service import crear_reporte_pdf_edicion
-                ruta_pdf = crear_reporte_pdf_edicion(edicion_id)
-                print(f"✓ PDF generado en: {ruta_pdf}")
-
-                try:
-                    from telegram_service import enviar_alerta_telegram
-                    from database import get_conn
-                    conn = get_conn()
-                    convocatorias = conn.execute(
-                        "SELECT titulo, partido, categoria FROM hallazgos WHERE edicion_id = ? AND es_convocatoria = 1",
-                        (edicion_id,),
-                    ).fetchall()
-                    nombres = conn.execute(
-                        "SELECT nombre FROM nombres_propios WHERE ultima_edicion_id = ? OR vigente = 1 ORDER BY (ultima_edicion_id = ?) DESC, id DESC LIMIT 5",
-                        (edicion_id, edicion_id),
-                    ).fetchall()
-                    hallazgos_dest = conn.execute(
-                        "SELECT partido, autor, texto FROM hallazgos WHERE edicion_id = ? AND descartado = 0 ORDER BY id DESC LIMIT 3",
-                        (edicion_id,),
-                    ).fetchall()
-                    grupos_dest = conn.execute(
-                        """
-                        SELECT id, fuente, autor, partido, titulo, texto, url, imagen_url FROM hallazgos
-                        WHERE (edicion_id = ? OR id > (SELECT COALESCE(MAX(id)-25, 0) FROM hallazgos))
-                          AND (pasada IN ('grupos_vecinales', 'feed_amigos', 'referentes_policiales', 'instagram_amigos')
-                               OR fuente LIKE '%Grupo%' OR fuente LIKE '%Amigos%' OR fuente LIKE '%Virginia%')
-                          AND url NOT LIKE '%facebook.com'
-                          AND url NOT LIKE '%facebook.com/'
-                          AND (url LIKE '%/posts/%' OR url LIKE '%/permalink/%' OR url LIKE '%/status/%' OR url LIKE '%/p/%' OR url LIKE '%/reel/%' OR url LIKE '%fbid=%' OR url LIKE '%/share/%' OR url NOT LIKE '%facebook.com%')
-                        ORDER BY (imagen_url IS NOT NULL AND imagen_url != '') DESC, id DESC LIMIT 4
-                        """,
-                        (edicion_id,),
-                    ).fetchall()
-                    conn.close()
-
-                    datos_edicion = {
-                        "edicion_id": edicion_id,
-                        "total_hallazgos": data_resp.get("resultado", {}).get("procesados", len(total_recolectados)),
-                        "nuevos_hallazgos": data_resp.get("resultado", {}).get("nuevos", 0),
-                        "convocatorias": [dict(c) for c in convocatorias],
-                        "nombres_propios": [n["nombre"] for n in nombres],
-                        "hallazgos_destacados": [dict(h) for h in hallazgos_dest],
-                        "relevamiento_grupos": [dict(g) for g in grupos_dest],
-                    }
-                    print("📲 Enviando reporte y PDF a Telegram...")
-                    res_tg = enviar_alerta_telegram(datos_edicion, ruta_pdf=ruta_pdf or "")
-                    if res_tg.get("ok"):
-                        print("✓ ¡Alerta y PDF enviados exitosamente por Telegram!")
-                    else:
-                        print("Aviso Telegram:", res_tg)
-                except Exception as e_tg:
-                    print("Error enviando por Telegram:", e_tg)
         except Exception as e:
-            print("Error enviando al backend:", e)
+            print(f"⚠️ Servidor API local no disponible ({e}). Ingestionando directamente en el motor local...")
+            try:
+                from engine import ingerir_posteos_directos_facebook
+                res_ing = ingerir_posteos_directos_facebook(total_recolectados, modo="sesion_abierta_playwright")
+                data_resp = {"ok": True, "resultado": res_ing}
+                edicion_id = res_ing.get("edicion_id")
+                print("Resultado de ingesta directa local:", data_resp)
+            except Exception as e_direct:
+                print("Error crítico en ingesta directa:", e_direct)
+
+        if edicion_id:
+            print(f"\n📄 Compilando reporte PDF para Edición #{edicion_id} con imágenes y comentarios...")
+            from pdf_service import crear_reporte_pdf_edicion
+            ruta_pdf = crear_reporte_pdf_edicion(edicion_id)
+            print(f"✓ PDF generado en: {ruta_pdf}")
+
+            try:
+                from telegram_service import enviar_alerta_telegram
+                from database import get_conn
+                conn = get_conn()
+                convocatorias = conn.execute(
+                    "SELECT titulo, partido, categoria FROM hallazgos WHERE edicion_id = ? AND es_convocatoria = 1",
+                    (edicion_id,),
+                ).fetchall()
+                nombres = conn.execute(
+                    "SELECT nombre FROM nombres_propios WHERE ultima_edicion_id = ? OR vigente = 1 ORDER BY (ultima_edicion_id = ?) DESC, id DESC LIMIT 5",
+                    (edicion_id, edicion_id),
+                ).fetchall()
+                hallazgos_dest = conn.execute(
+                    "SELECT partido, autor, texto FROM hallazgos WHERE edicion_id = ? AND descartado = 0 ORDER BY id DESC LIMIT 3",
+                    (edicion_id,),
+                ).fetchall()
+                grupos_dest = conn.execute(
+                    """
+                    SELECT id, fuente, autor, partido, titulo, texto, url, imagen_url FROM hallazgos
+                    WHERE (edicion_id = ? OR id > (SELECT COALESCE(MAX(id)-25, 0) FROM hallazgos))
+                      AND (pasada IN ('grupos_vecinales', 'feed_amigos', 'referentes_policiales', 'instagram_amigos')
+                           OR fuente LIKE '%Grupo%' OR fuente LIKE '%Amigos%' OR fuente LIKE '%Virginia%')
+                      AND url NOT LIKE '%facebook.com'
+                      AND url NOT LIKE '%facebook.com/'
+                      AND (url LIKE '%/posts/%' OR url LIKE '%/permalink/%' OR url LIKE '%/status/%' OR url LIKE '%/p/%' OR url LIKE '%/reel/%' OR url LIKE '%fbid=%' OR url LIKE '%/share/%' OR url NOT LIKE '%facebook.com%')
+                    ORDER BY (imagen_url IS NOT NULL AND imagen_url != '') DESC, id DESC LIMIT 4
+                    """,
+                    (edicion_id,),
+                ).fetchall()
+                conn.close()
+
+                datos_edicion = {
+                    "edicion_id": edicion_id,
+                    "total_hallazgos": data_resp.get("resultado", {}).get("procesados", len(total_recolectados)),
+                    "nuevos_hallazgos": data_resp.get("resultado", {}).get("nuevos", 0),
+                    "convocatorias": [dict(c) for c in convocatorias],
+                    "nombres_propios": [n["nombre"] for n in nombres],
+                    "hallazgos_destacados": [dict(h) for h in hallazgos_dest],
+                    "relevamiento_grupos": [dict(g) for g in grupos_dest],
+                }
+                print("📲 Enviando reporte y PDF a Telegram...")
+                res_tg = enviar_alerta_telegram(datos_edicion, ruta_pdf=ruta_pdf or "")
+                if res_tg.get("ok"):
+                    print("✓ ¡Alerta y PDF enviados exitosamente por Telegram!")
+                else:
+                    print("Aviso Telegram:", res_tg)
+            except Exception as e_tg:
+                print("Error enviando por Telegram:", e_tg)
 
 
 def modo_login():

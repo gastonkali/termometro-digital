@@ -3,8 +3,8 @@
 DIR="/home/gnet/.gemini/antigravity/scratch/termometro-digital"
 cd "$DIR" || exit 1
 
-# Asegurar que el servidor local app.py esté corriendo
-if ! pgrep -f "python3 app.py" > /dev/null; then
+# Asegurar que el servidor local app.py esté corriendo para termometro-digital
+if ! pgrep -f "termometro-digital/app.py" > /dev/null; then
     nohup "$DIR/.venv/bin/python3" "$DIR/app.py" > "$DIR/app.log" 2>&1 &
     sleep 3
 fi
