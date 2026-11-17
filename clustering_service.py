@@ -245,7 +245,9 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
             "cortaron la calle", "cortan la calle", "cortaron la ruta", "cortan la ruta", "piquete",
             "protesta", "movilizacion", "autoconvocados", "asamblea vecinal", "ruidazo",
             "homicidio", "asesinato", "asesinaron", "femicidio", "crimen", "sicario", "secuestro",
-            "complot", "atentado",
+            "complot", "atentado", "disparos", "balazos", "tiros", "baleado", "baleada",
+            "herido de bala", "heridos de bala", "arma de fuego", "enfrentamiento armado",
+            "narcomenudeo", "banda narco", "bandas narco", "bunker narco",
         ]):
             clima_est = "MODERADO"
         else:

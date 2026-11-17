@@ -569,6 +569,12 @@ def completar_comentarios(context, posteos: List[Dict[str, Any]], max_posts: int
             nuevos = replies
         elif "facebook.com" in url or "fb.com" in url:
             nuevos = extraer_comentarios_facebook(context, url, max_comentarios=4, texto_post=texto)
+        elif "instagram.com" in url:
+            if p.get("comentarios"):
+                continue  # ya se leyeron al abrir el post
+            nuevos, metricas_ig = extraer_comentarios_instagram(context, url, max_comentarios=4)
+            if metricas_ig:
+                p["metricas"] = {**(p.get("metricas") or {}), **metricas_ig}
         else:
             continue
         leidos += 1
@@ -1555,6 +1561,200 @@ def extraer_posteos_instagram(page, max_items: int = 6) -> List[Dict[str, Any]]:
     return posteos
 
 
+JS_POST_INSTAGRAM = r"""() => {
+    const main = document.querySelector('main') || document.body;
+    const UI = /^(responder|reply|ver traducción|see translation|me gusta|like|\d+\s*(sem|min|h|d|s|w|a)|ver respuestas.*|ocultar respuestas|editado|seguir|following|seguidos|follow|·|autor|creator)$/i;
+    const tEl = main.querySelector('time[datetime]');
+    const fechaIso = tEl ? tEl.getAttribute('datetime') : '';
+    const h1 = main.querySelector('h1');
+    const caption = h1 ? (h1.innerText || '').trim() : '';
+    let autor = '';
+    const header = main.querySelector('header');
+    if (header) {
+        const a = header.querySelector('a[href^="/"]');
+        if (a) autor = (a.innerText || a.getAttribute('href') || '').replace(/\//g, '').trim();
+    }
+    let imgUrl = '';
+    for (const im of main.querySelectorAll('img')) {
+        const s = im.src || '';
+        if ((s.includes('cdninstagram') || s.includes('fbcdn')) && (im.naturalWidth || im.width || 0) > 200) { imgUrl = s; break; }
+    }
+    // Comentarios: cada <li> (o contenedor de lista) con un enlace a un perfil y texto
+    const comentarios = [];
+    const vistos = new Set();
+    for (const li of main.querySelectorAll('ul li, div[role="listitem"]')) {
+        const link = li.querySelector('a[href^="/"]:not([href*="/p/"]):not([href*="/explore/"])');
+        if (!link) continue;
+        const usuario = (link.innerText || '').trim() || (link.getAttribute('href') || '').replace(/\//g, '');
+        if (!usuario || usuario.includes(' ')) continue;
+        const lineas = (li.innerText || '').split('\n').map(l => l.trim())
+            .filter(l => l && l !== usuario && !UI.test(l) && !/^\d+ (me gusta|likes?)$/i.test(l));
+        const texto = lineas.join(' ').trim();
+        if (!texto || texto === caption || vistos.has(texto)) continue;
+        vistos.add(texto);
+        comentarios.push({ autor: usuario, texto });
+    }
+    // Métricas visibles: "217 Me gusta", "Les gusta a X y 216 personas más", "Ver los 12 comentarios"
+    const todo = main.innerText || '';
+    let reacciones = 0, numComentarios = 0;
+    let m = todo.match(/([\d.,]+\s*(?:mil|k)?)\s+me gusta/i) || todo.match(/([\d.,]+\s*(?:mil|k)?)\s+likes?/i);
+    if (m) reacciones = m[1];
+    m = todo.match(/y\s+([\d.,]+\s*(?:mil|k)?)\s+personas? más/i) || todo.match(/and\s+([\d.,]+\s*(?:k)?)\s+others/i);
+    if (m && !reacciones) reacciones = 'MAS1:' + m[1];
+    m = todo.match(/ver (?:los |todos los )?([\d.,]+\s*(?:mil|k)?)\s+comentarios/i) || todo.match(/view all ([\d.,]+) comments/i);
+    if (m) numComentarios = m[1];
+    return { fechaIso, caption, autor, imgUrl, comentarios, reacciones: String(reacciones), numComentarios: String(numComentarios) };
+}"""
+
+
+def leer_post_instagram(page, url: str) -> Optional[Dict[str, Any]]:
+    """Abre un post / reel de Instagram y devuelve texto, fecha, comentarios y métricas."""
+    from config_pba import parsear_numero_red
+
+    try:
+        page.goto(url, timeout=25000, wait_until="domcontentloaded")
+        try:
+            page.wait_for_selector("main time[datetime], main h1", timeout=12000)
+        except Exception:
+            return None
+        time.sleep(1.5)
+        # Desplegar más comentarios si está el botón
+        try:
+            page.evaluate(r"""() => {
+                for (const b of document.querySelectorAll('main [role="button"], main button')) {
+                    const t = (b.getAttribute('aria-label') || b.innerText || '').trim();
+                    if (/cargar más comentarios|load more comments/i.test(t)) { try { b.click(); } catch(e){} }
+                }
+            }""")
+            time.sleep(1.2)
+        except Exception:
+            pass
+        d = page.evaluate(JS_POST_INSTAGRAM)
+    except Exception as e:
+        print(f"  [Aviso Instagram post]: {e}")
+        return None
+
+    reac_txt = d.get("reacciones") or "0"
+    reacciones = parsear_numero_red(reac_txt.replace("MAS1:", "")) + (1 if reac_txt.startswith("MAS1:") else 0)
+    comentarios = []
+    for c in d.get("comentarios") or []:
+        if c.get("autor") and c["autor"] == d.get("autor"):
+            continue  # respuestas del propio autor
+        if _comentario_util(c.get("texto", ""), d.get("caption", "")):
+            comentarios.append(f"{c['autor']}: {c['texto']}")
+    return {
+        "caption": d.get("caption", ""),
+        "autor": d.get("autor", ""),
+        "fecha_iso_raw": d.get("fechaIso", ""),
+        "imagen_url": d.get("imgUrl", ""),
+        "comentarios": comentarios,
+        "metricas": {
+            "comentarios": max(parsear_numero_red(d.get("numComentarios") or "0"), len(d.get("comentarios") or [])),
+            "compartidos": 0,
+            "reacciones": reacciones,
+        },
+    }
+
+
+def extraer_comentarios_instagram(context, post_url: str, max_comentarios: int = 4) -> Tuple[List[str], Dict[str, int]]:
+    """Abre un post de Instagram en otra pestaña y devuelve (comentarios, métricas)."""
+    p_tab = None
+    try:
+        p_tab = context.new_page()
+        datos = leer_post_instagram(p_tab, post_url)
+        if not datos:
+            return [], {}
+        return datos["comentarios"][:max_comentarios], datos["metricas"]
+    finally:
+        if p_tab:
+            try:
+                p_tab.close()
+            except Exception:
+                pass
+
+
+def extraer_posteos_instagram_cuentas(page, cuentas: Optional[List[str]] = None, max_por_cuenta: Optional[int] = None,
+                                      verbose: bool = False) -> List[Dict[str, Any]]:
+    """
+    Revisa en cada corrida las últimas publicaciones de las cuentas de Instagram configuradas
+    (CUENTAS_INSTAGRAM), con su fecha, comentarios y métricas. A diferencia del feed, que
+    Instagram ordena a su criterio, acá no se pierde ningún post reciente de esas cuentas.
+    """
+    from config_pba import (CUENTAS_INSTAGRAM, MAX_HORAS_ANTIGUEDAD, MAX_POSTS_POR_CUENTA_IG,
+                            es_exclusion_geografica, es_tema_excluido, es_texto_espanol)
+    from engine import detectar_partido_en_texto
+
+    cuentas = cuentas or CUENTAS_INSTAGRAM
+    max_por_cuenta = max_por_cuenta or MAX_POSTS_POR_CUENTA_IG
+    posteos: List[Dict[str, Any]] = []
+
+    for cuenta in cuentas:
+        try:
+            print(f"  📸 Revisando cuenta de Instagram @{cuenta}...")
+            page.goto(f"https://www.instagram.com/{cuenta}/", timeout=30000, wait_until="domcontentloaded")
+            try:
+                page.wait_for_selector('a[href*="/p/"], a[href*="/reel/"]', timeout=15000)
+            except Exception:
+                url_actual = page.url or ""
+                motivo = "SIN SESIÓN (pide iniciar sesión)" if "/accounts/login" in url_actual else "no cargó la grilla de publicaciones"
+                print(f"  ⚠️ [Instagram @{cuenta}] {motivo}")
+                continue
+            links = page.evaluate(r"""() => {
+                const out = [];
+                for (const a of document.querySelectorAll('main a[href*="/p/"], main a[href*="/reel/"]')) {
+                    const h = a.href.split('?')[0];
+                    if (!out.includes(h)) out.push(h);
+                }
+                return out.slice(0, 9);
+            }""")
+        except Exception as e:
+            print(f"  [Aviso Instagram @{cuenta}]: {e}")
+            continue
+
+        aceptados = 0
+        viejos_seguidos = 0
+        for url in links:
+            if aceptados >= max_por_cuenta or viejos_seguidos >= 3:
+                break
+            datos = leer_post_instagram(page, url)
+            if not datos or not datos["caption"]:
+                continue
+            fecha_iso, es_vieja = _fecha_iso_externa(datos["fecha_iso_raw"])
+            if es_vieja:
+                # Los primeros pueden ser posts fijados (viejos): seguir mirando un poco más
+                viejos_seguidos += 1
+                if verbose:
+                    print(f"    ✗ más viejo que {MAX_HORAS_ANTIGUEDAD} h: {datos['caption'][:80]!r}")
+                continue
+            viejos_seguidos = 0
+            txt = datos["caption"]
+            excluir, motivo = es_tema_excluido("", txt, cuenta)
+            if excluir or not es_texto_espanol(txt) or es_exclusion_geografica(txt):
+                if verbose:
+                    print(f"    ✗ {motivo or 'sin lugar de PBA / idioma'}: {txt[:80]!r}")
+                continue
+            partido = detectar_partido_en_texto(txt, partido_por_defecto="Provincia de Buenos Aires")
+            primer_renglon = next((l for l in txt.split("\n") if len(l.strip()) > 15), txt)[:75].strip()
+            if verbose:
+                print(f"    ✓ [{partido}] {txt[:80]!r} — {len(datos['comentarios'])} comentarios leídos, métricas {datos['metricas']}")
+            posteos.append({
+                "fuente": f"Instagram (@{cuenta})",
+                "autor": datos["autor"] or cuenta,
+                "url": url,
+                "titulo": f"{datos['autor'] or cuenta}: {primer_renglon}",
+                "texto": txt,
+                "comentarios": datos["comentarios"][:4],
+                "imagen_url": datos["imagen_url"],
+                "partido": partido,
+                "categoria": "",
+                "pasada": "instagram_cuentas",
+                "fecha_publicacion": fecha_iso,
+                "metricas": datos["metricas"],
+            })
+            aceptados += 1
+    return posteos
+
+
 def _hechos_importantes_edicion(edicion_id) -> List[Dict[str, Any]]:
     try:
         from pdf_service import obtener_hechos_importantes
@@ -1658,6 +1858,10 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
         ig_posts = extraer_posteos_instagram(page, max_items=5)
         total_recolectados.extend(ig_posts)
 
+        # Fase 4b: cuentas de Instagram configuradas (noticias locales que seguís)
+        print("\n📸 Revisando cuentas de Instagram configuradas...")
+        total_recolectados.extend(extraer_posteos_instagram_cuentas(page))
+
         # Fase 5: reacción vecinal — comentarios de las publicaciones relevantes
         print("\n💬 Leyendo comentarios de las publicaciones que van al reporte...")
         completar_comentarios(context, total_recolectados, max_posts=int(os.getenv("TERMOMETRO_MAX_POSTS_COMENTARIOS", "8")))
@@ -1716,7 +1920,7 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
                     """
                     SELECT id, fuente, autor, partido, titulo, texto, url, imagen_url FROM hallazgos
                     WHERE edicion_id = ?
-                      AND (pasada IN ('grupos_vecinales', 'feed_amigos', 'referentes_policiales', 'instagram_amigos')
+                      AND (pasada IN ('grupos_vecinales', 'feed_amigos', 'referentes_policiales', 'instagram_amigos', 'instagram_cuentas')
                            OR fuente LIKE '%Grupo%' OR fuente LIKE '%Amigos%' OR fuente LIKE '%Virginia%')
                       AND url NOT LIKE '%facebook.com'
                       AND url NOT LIKE '%facebook.com/'
@@ -1805,10 +2009,23 @@ if __name__ == "__main__":
     parser.add_argument("--login", action="store_true", help="Abrir navegador para iniciar sesión una única vez")
     parser.add_argument("--headless", action="store_true", help="Correr en segundo plano sin ventana visible")
     parser.add_argument("--max-consultas", type=int, default=5, help="Cantidad de consultas a ejecutar")
+    parser.add_argument("--probar-ig", metavar="CUENTA", help="Probar la lectura de una cuenta de Instagram sin guardar nada (ej: hechosyderecho)")
     parser.add_argument("--probar-x", metavar="CONSULTA", help='Probar una búsqueda en X sin guardar nada (ej: "La Matanza inseguridad")')
     args = parser.parse_args()
 
-    if args.probar_x:
+    if args.probar_ig:
+        p_ig, ctx_ig = lanzar_navegador_sesion(headless=args.headless)
+        try:
+            pag = ctx_ig.pages[0] if ctx_ig.pages else ctx_ig.new_page()
+            res_ig = extraer_posteos_instagram_cuentas(pag, [args.probar_ig.lstrip("@")], verbose=True)
+            print(f"\nResultado: {len(res_ig)} publicaciones pasarían al reporte.")
+            for r_ig in res_ig:
+                for c_ig in r_ig["comentarios"]:
+                    print(f"    💬 {c_ig[:120]}")
+        finally:
+            ctx_ig.close()
+            p_ig.stop()
+    elif args.probar_x:
         probar_x(args.probar_x, headless=args.headless)
     elif args.login:
         modo_login()

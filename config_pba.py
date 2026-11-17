@@ -186,9 +186,38 @@ NOMBRES_NO_GEOGRAFICOS: List[str] = [
 
 
 def quitar_nombres_no_geograficos(texto_norm: str) -> str:
+    texto_norm = expandir_hashtags_lugar(texto_norm)
     for n in NOMBRES_NO_GEOGRAFICOS:
         texto_norm = re.sub(r"(?<![\wñ])" + re.escape(n) + r"(?![\wñ])", " ", texto_norm)
     return texto_norm
+
+
+def _lugares_por_hashtag() -> Dict[str, str]:
+    lugares = {}
+    for nombre in list(PARTIDOS_PBA) + list(LOCALIDADES_A_PARTIDO.keys()):
+        clave = re.sub(r"[^a-zñ0-9]", "", quitar_tildes(nombre.lower()))
+        lugares[clave] = quitar_tildes(nombre.lower())
+    return lugares
+
+
+_HASHTAGS_LUGAR: Dict[str, str] = {}
+
+
+def expandir_hashtags_lugar(texto: str) -> str:
+    """Convierte hashtags de lugar en el nombre del lugar: "#LaPlata" / "#laplata" →
+    "la plata", "#LomasDeZamora" → "lomas de zamora". Las cuentas de noticias de
+    Instagram suelen ubicar el hecho solo con el hashtag."""
+    global _HASHTAGS_LUGAR
+    if "#" not in (texto or ""):
+        return texto
+    if not _HASHTAGS_LUGAR:
+        _HASHTAGS_LUGAR = _lugares_por_hashtag()
+
+    def _reemplazo(m):
+        clave = quitar_tildes(m.group(1).lower())
+        return f" {_HASHTAGS_LUGAR[clave]} " if clave in _HASHTAGS_LUGAR else m.group(0)
+
+    return re.sub(r"#([A-Za-zÁÉÍÓÚÑáéíóúñ0-9]+)", _reemplazo, texto)
 
 # ---------------------------------------------------------------------------
 # FILTROS DE TEMAS QUE NO INTERESAN (editables)
@@ -255,6 +284,7 @@ SENALES_CONFLICTO: List[str] = [
     "apuñalado", "acuchillado", "intento de homicidio", "crimen", "homicida", "arma",
     "armas", "allanamiento", "allanamientos", "allanaron", "detenido", "detenidos",
     "detenida", "detuvieron", "secuestraron", "extorsion", "extorsionaban", "toma de rehenes",
+    "balazos", "narcomenudeo", "narcos", "banda narco", "enfrentamiento", "arma de fuego",
 ]
 
 # Ataques o amenazas contra autoridades: siempre se consideran EN ALERTA.
@@ -271,6 +301,18 @@ PATRON_ATAQUE_AUTORIDAD = re.compile(
 
 def es_ataque_a_autoridad(texto: str) -> bool:
     return bool(PATRON_ATAQUE_AUTORIDAD.search(quitar_tildes((texto or "").lower())))
+
+# Cuentas de Instagram que se revisan en CADA corrida (sus últimas publicaciones y
+# comentarios). Agregá acá las cuentas de noticias locales que seguís, sin "@".
+# También se pueden sumar desde el .env: TERMOMETRO_CUENTAS_IG=cuenta1,cuenta2
+CUENTAS_INSTAGRAM: List[str] = [
+    "hechosyderecho",
+]
+CUENTAS_INSTAGRAM += [
+    c.strip().lstrip("@") for c in os.getenv("TERMOMETRO_CUENTAS_IG", "").split(",")
+    if c.strip() and c.strip().lstrip("@") not in CUENTAS_INSTAGRAM
+]
+MAX_POSTS_POR_CUENTA_IG: int = int(os.getenv("TERMOMETRO_POSTS_POR_CUENTA_IG", "3"))
 
 # Antigüedad máxima (en horas) de una publicación para considerarla vigente.
 MAX_HORAS_ANTIGUEDAD: int = int(os.getenv("TERMOMETRO_MAX_HORAS", "72"))

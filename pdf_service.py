@@ -372,7 +372,7 @@ def generar_html_reporte(
         p_val = (r.get("pasada") or "").lower()
         f_val = (r.get("fuente") or "").lower()
         if (
-            p_val in ("grupos_vecinales", "feed_amigos", "referentes_policiales", "instagram_amigos")
+            p_val in ("grupos_vecinales", "feed_amigos", "referentes_policiales", "instagram_amigos", "instagram_cuentas")
             or "grupo:" in f_val
             or "amigos" in f_val
             or "contactos" in f_val
