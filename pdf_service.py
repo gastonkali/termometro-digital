@@ -31,6 +31,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from database import get_conn
 from clustering_service import agrupar_en_clusters
 from config_pba import (
+    MAX_HORAS_ANTIGUEDAD,
+    describir_fecha,
+    es_tema_excluido,
+    fecha_publicacion_iso,
+    texto_sin_comentarios,
     es_ruido_o_no_conflictividad,
     es_exclusion_geografica,
     es_texto_basura_ui,
@@ -97,6 +102,27 @@ def recortar_texto_limpio(texto: str, max_chars: int = 140) -> str:
 def limpiar_contexto_nombre(texto: str, max_chars: int = 140) -> str:
     return recortar_texto_limpio(texto, max_chars=max_chars)
 
+
+def html_comentarios(comentarios: List[Any], max_items: int = 2, max_chars: int = 90) -> str:
+    """Lista de comentarios reales ("Autor: texto") escapada para el PDF.
+    Si no hay comentarios lo dice, sin inventar ninguna reacción."""
+    items = [str(c).strip().replace('"', "") for c in (comentarios or []) if str(c).strip()]
+    if not items:
+        return "<span style='color:#94a3b8; font-style:italic;'>Sin comentarios registrados</span>"
+    partes = []
+    for c in items[:max_items]:
+        if ":" in c:
+            autor, cuerpo = c.split(":", 1)
+            partes.append(
+                f"<div style='margin-bottom:3px;'><strong>{html_lib.escape(autor.strip())}:</strong> "
+                f"“{html_lib.escape(recortar_texto_limpio(cuerpo.strip(), max_chars))}”</div>"
+            )
+        else:
+            partes.append(f"<div style='margin-bottom:3px;'>“{html_lib.escape(recortar_texto_limpio(c, max_chars))}”</div>")
+    if len(items) > max_items:
+        partes.append(f"<span style='color:#64748b; font-size:6.5pt;'>+{len(items) - max_items} comentarios más</span>")
+    return "".join(partes)
+
 def clasificar_descartes_y_vigentes(hallazgos_raw: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Separa las publicaciones entre Vigentes en PBA y Descartadas (desactualizadas, fuera de alcance CABA, autopromoción).
@@ -119,25 +145,19 @@ def clasificar_descartes_y_vigentes(hallazgos_raw: List[Dict[str, Any]]) -> Tupl
             })
             continue
 
-        # 2. Chequeo de fecha desactualizada (2023, 2024, 2025 anteriores)
-        m_fecha = re.search(r'\b(202[0-5]|15/03/2023|26/06/2024|17/02/2024|30/03/2025)\b', comb)
-        if m_fecha or "hace 2 años" in comb_low or "hace un año" in comb_low:
-            fecha_str = m_fecha.group(1) if m_fecha else "Años anteriores"
-            partido_erroneo = ""
-            if "sarandi" in comb_low and "la plata" in h.get("partido", "").lower():
-                partido_erroneo = " Además, mal ubicada: Avellaneda, no La Plata."
-            elif "bernal" in comb_low and "la plata" in h.get("partido", "").lower():
-                partido_erroneo = " Mal ubicada: Quilmes, no La Plata."
-
+        # 1b. Temas que no interesan (clima, clasificados, fuentes bloqueadas)
+        excluir, motivo_tema = es_tema_excluido(h.get("titulo", ""), h.get("texto", ""), h.get("autor", ""))
+        if excluir:
             descartados.append({
                 "publicacion": f"{h.get('autor') or h.get('fuente', 'Redes')} ({h.get('fuente', 'Web')})",
-                "contenido": recortar_texto_limpio(h.get("texto", h.get("titulo", "")), 130),
-                "motivo": f"Desactualizada: {fecha_str}.{partido_erroneo}",
+                "contenido": recortar_texto_limpio(texto_sin_comentarios(h.get("texto", h.get("titulo", ""))), 130),
+                "motivo": f"Fuera de tema: {motivo_tema}.",
                 "url": h.get("url", "#")
             })
             continue
 
-        # 3. Chequeo geográfico estricto
+        # 2. Chequeo geográfico estricto (antes que la fecha, para que un post de
+        #    Mendoza figure como "fuera de alcance" y no como "desactualizado")
         if es_exclusion_geografica(comb, h.get("partido", "")):
             descartados.append({
                 "publicacion": f"{h.get('autor') or h.get('fuente', 'Redes')}",
@@ -147,8 +167,36 @@ def clasificar_descartes_y_vigentes(hallazgos_raw: List[Dict[str, Any]]) -> Tupl
             })
             continue
 
+        # 3. Fecha real de publicación (guardada por el scraper o decodificada del ID de X)
+        fecha_pub = fecha_publicacion_iso(h.get("fecha_publicacion", ""), h.get("url", ""))
+        h["fecha_publicacion_dt"] = fecha_pub
+        vieja = False
+        fecha_str = ""
+        if fecha_pub:
+            if (datetime.now() - fecha_pub).total_seconds() > MAX_HORAS_ANTIGUEDAD * 3600:
+                vieja = True
+                fecha_str = fecha_pub.strftime("%d/%m/%Y")
+        else:
+            # Sin fecha confiable: solo se descarta si el texto menciona un año anterior.
+            anio_actual = datetime.now().year
+            m_fecha = re.search(r"\b(20[12]\d)\b", comb)
+            if m_fecha and int(m_fecha.group(1)) < anio_actual - 1:
+                vieja = True
+                fecha_str = f"menciona {m_fecha.group(1)}"
+            elif "hace 2 años" in comb_low or "hace un año" in comb_low:
+                vieja = True
+                fecha_str = "años anteriores"
+        if vieja:
+            descartados.append({
+                "publicacion": f"{h.get('autor') or h.get('fuente', 'Redes')} ({h.get('fuente', 'Web')})",
+                "contenido": recortar_texto_limpio(h.get("texto", h.get("titulo", "")), 130),
+                "motivo": f"Desactualizada: {fecha_str}.",
+                "url": h.get("url", "#")
+            })
+            continue
+
         # Asignar precisión geográfica y de eje
-        h["partido"] = resolver_partido_geografico_preciso(comb, h.get("partido", ""))
+        h["partido"] = resolver_partido_geografico_preciso(texto_sin_comentarios(h.get("texto", "") or h.get("titulo", "")), h.get("partido", ""))
         h["categoria"] = resolver_eje_tematico_preciso(comb, h.get("categoria", ""))
         vigentes.append(h)
 
@@ -242,8 +290,7 @@ def generar_html_reporte(
         )
     else:
         texto_analisis_clima = (
-            "Sin focos masivos de conflictividad detectados en este turno de monitoreo. Tránsito con fluidez habitual "
-            "en las principales trazas y reclamos vecinales de servicios canalizados por vías de atención regulares."
+            "Sin focos de conflictividad detectados en las publicaciones relevadas en este corte."
         )
 
     fecha_hora = datetime.now().strftime("%d/%m/%Y %H:%M")
@@ -260,7 +307,7 @@ def generar_html_reporte(
     # Relevamiento exclusivo de Grupos, Red Personal y Contactos seguidos
     items_red_propia = []
     ids_vistos = set()
-    for r in raw_items:
+    for r in vigentes_items:
         p_val = (r.get("pasada") or "").lower()
         f_val = (r.get("fuente") or "").lower()
         if (
@@ -278,8 +325,9 @@ def generar_html_reporte(
                     ids_vistos.add(r["id"])
                     items_red_propia.append(r)
 
-    # Si hay pocos en la edición actual, complementar con los últimos registrados en la base
-    if len(items_red_propia) < 3:
+    # (Antes, si había menos de 3, se completaba con los últimos posteos de la base, aunque
+    #  fueran de días anteriores: por eso aparecían noticias viejas. Ya no se rellena.)
+    if False:
         conn = get_conn()
         recientes_grupos = conn.execute(
             """
@@ -332,7 +380,7 @@ def generar_html_reporte(
         partido = html_lib.escape(item.get("partido") or "PBA")
         
         txt_raw = item.get("texto") or item.get("titulo") or ""
-        txt_limpio = html_lib.escape(recortar_texto_limpio(txt_raw.split("\n\n💬")[0], 110))
+        txt_limpio = html_lib.escape(recortar_texto_limpio(texto_sin_comentarios(txt_raw), 110))
         
         img_url = (item.get("imagen_url") or "").strip()
         url_directa = (item.get("url") or "").strip()
@@ -360,6 +408,7 @@ def generar_html_reporte(
             )
 
         comms_raw = item.get("comentarios") or item.get("comentarios_json") or []
+        fecha_item = describir_fecha(item.get("fecha_publicacion_dt"))
         if isinstance(comms_raw, str):
             try:
                 comms_raw = json.loads(comms_raw)
@@ -368,7 +417,7 @@ def generar_html_reporte(
         
         reaccion_txt = ""
         if comms_raw and isinstance(comms_raw, list):
-            c_primero = str(comms_raw[0]).strip().replace("\xa0", " ")
+            c_primero = str(comms_raw[0]).strip().replace("\xa0", " ").replace('"', '')
             if ":" in c_primero:
                 c_autor, c_cuerpo = c_primero.split(":", 1)
                 reaccion_txt = f"<strong>{html_lib.escape(c_autor.strip())}:</strong> “{html_lib.escape(recortar_texto_limpio(c_cuerpo.strip(), 70))}”"
@@ -385,12 +434,13 @@ def generar_html_reporte(
         <tr>
           <td>
             <strong style="color:#1e3a8a;">{html_lib.escape(comunidad_lbl)}</strong><br/>
-            <span style="font-size: 6.8pt; color: #475569;">Por: {autor}</span>
+            <span style="font-size: 6.8pt; color: #475569;">Por: {autor}</span><br/>
+            <span style="font-size: 6.5pt; color: #94a3b8;">{html_lib.escape(fecha_item)}</span>
           </td>
           <td><strong>{partido}</strong></td>
           <td style="text-align: center; vertical-align: middle;">{thumb_item}</td>
           <td style="font-size: 7.9pt; line-height: 1.25;">{txt_limpio}</td>
-          <td>{reaccion_txt}</td>
+          <td>{html_comentarios(comms_raw if isinstance(comms_raw, list) else [], max_items=2, max_chars=70)}</td>
           <td style="text-align: center;">{link_td}</td>
         </tr>
         """
@@ -705,7 +755,7 @@ def generar_html_reporte(
         <div class="main-subtitle">Monitoreo de redes sociales (Facebook, X, Instagram, Google) · 135 partidos de la Provincia de Buenos Aires</div>
       </div>
       <div class="top-meta">
-        <div><strong>{edicion_str} · versión corregida</strong></div>
+        <div><strong>{edicion_str}</strong></div>
         <div class="corte-date">Corte: {fecha_hora}</div>
       </div>
     </div>
@@ -784,9 +834,9 @@ def generar_html_reporte(
         <tr>
           <td><span class="pill-clima pill-clima-bueno">BUENO</span></td>
           <td>Provincia de Buenos Aires</td>
-          <td>Monitoreo habitual sin incidentes de gravedad detectados en el corte.<div class="sub-eje">Eje: preventivo</div></td>
-          <td>Sin quejas masivas registradas.</td>
-          <td>Monitoreo multired · <a class="link-inline" href="#">ver ↗</a></td>
+          <td>Sin hechos vigentes detectados en las publicaciones relevadas.</td>
+          <td>—</td>
+          <td>—</td>
         </tr>
         """
     else:
@@ -803,15 +853,17 @@ def generar_html_reporte(
             else:
                 fuente_td = f'{primera_fuente}'
 
+            reaccion_html = html_comentarios(c.get("comentarios_cluster") or [], max_items=2, max_chars=80)
+            fecha_hecho = describir_fecha(c["representante"].get("fecha_publicacion_dt"))
             html += f"""
         <tr>
           <td><span class="pill-clima {pill_class}">{c['clima_estado']}</span></td>
-          <td><strong>{c['partido']}</strong></td>
+          <td><strong>{html_lib.escape(c['partido'])}</strong></td>
           <td>
-            {c['titulo_cluster']}
-            <div class="sub-eje">Eje: {eje_str}</div>
+            {html_lib.escape(c['titulo_cluster'])}
+            <div class="sub-eje">Eje: {eje_str} · {html_lib.escape(fecha_hecho)}</div>
           </td>
-          <td>{c['reaccion_vecinal']}</td>
+          <td>{reaccion_html}</td>
           <td>{fuente_td}</td>
         </tr>
             """
@@ -819,7 +871,7 @@ def generar_html_reporte(
     html += f"""
       </tbody>
     </table>
-    <div class="clarification-note">Los links de publicaciones dirigen a la publicación original verificada en la plataforma correspondiente.</div>
+    <div class="clarification-note">Fechas: tomadas de la propia publicación (Facebook / Instagram) o del ID de X. "Fecha no verificada" = la red no la mostró legible. Se descartan publicaciones de más de {MAX_HORAS_ANTIGUEDAD} h.</div>
 
     <!-- DESTACADO -->
     <div class="section-title">Destacado</div>
@@ -836,7 +888,7 @@ def generar_html_reporte(
             else (rep.get("autor") or "Vecinos")
         )
         plataforma_dest = rep.get("fuente", "Redes Sociales")
-        fecha_pub_dest = rep.get("fecha_publicacion", "Reciente")
+        fecha_pub_dest = describir_fecha(rep.get("fecha_publicacion_dt"))
         clima_dest = destacado_item["clima_estado"]
         pill_dest_class = (
             "pill-clima-alerta" if clima_dest == "EN ALERTA"
@@ -854,10 +906,11 @@ def generar_html_reporte(
                 f'</div>'
             )
 
-        desc_cruda = rep.get("texto") or rep.get("titulo") or destacado_item["titulo_cluster"]
+        desc_cruda = texto_sin_comentarios(rep.get("texto") or "") or rep.get("titulo") or destacado_item["titulo_cluster"]
         desc_limpia = recortar_texto_limpio(desc_cruda, max_chars=260)
 
-        comentarios_raw = rep.get("comentarios") or rep.get("comentarios_json") or []
+        # Comentarios de todas las publicaciones del mismo hecho, no solo de una
+        comentarios_raw = destacado_item.get("comentarios_cluster") or rep.get("comentarios") or rep.get("comentarios_json") or []
         if isinstance(comentarios_raw, str):
             try:
                 comentarios_raw = json.loads(comentarios_raw)
@@ -917,7 +970,7 @@ def generar_html_reporte(
         html += """
     <div class="destacado-card">
       <div class="destacado-desc" style="color: #64748b; font-style: italic;">
-        Sin incidentes de conflictividad destacados en este turno de monitoreo. Situación de normalidad vecinal en los 135 partidos de la PBA.
+        Sin hechos destacados en las publicaciones relevadas en este corte.
       </div>
     </div>
         """
@@ -999,7 +1052,7 @@ def generar_html_reporte(
     html += f"""
       </tbody>
     </table>
-    <div class="clarification-note">Las fechas de las publicaciones de X se obtuvieron del identificador de cada publicación.</div>
+    <div class="clarification-note">Las fechas de las publicaciones de X se obtienen del identificador de cada publicación.</div>
 
     <div class="section-title" style="margin-top: 14px; font-size: 11pt;">Anexo — Figuras públicas / personas mencionadas por los vecinos y palabras nuevas</div>
     <table class="data-table anexo-table">
@@ -1088,7 +1141,6 @@ def generar_html_reporte(
     html += f"""
       </tbody>
     </table>
-    <div class="clarification-note">Los links de publicaciones dirigen a la publicación original verificada en la plataforma correspondiente.</div>
     <div class="doc-footer">
       Reporte generado por Termómetro Digital · Cobertura: 135 municipios bonaerenses · Excluye CABA y otras provincias · Versión modelo de Alertas
     </div>

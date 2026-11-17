@@ -116,8 +116,25 @@ def init_db() -> None:
     conn.close()
 
 
+_PARAMS_IDENTIDAD_URL = ("fbid", "story_fbid", "id", "v")
+
+
 def compute_url_hash(url: str, titulo: str = "", texto: str = "") -> str:
-    clean = (url or "").strip().split("?")[0].lower()
+    # Conservar los parámetros que identifican la publicación (fbid, story_fbid, v, id).
+    # Antes se cortaba todo desde "?" y TODAS las fotos (photo/?fbid=...) compartían el
+    # mismo hash: la segunda foto se tomaba como duplicada y pisaba imagen y comentarios
+    # de la primera, mezclando datos de publicaciones distintas.
+    from urllib.parse import parse_qs, urlsplit
+
+    raw = (url or "").strip()
+    base, _, query = raw.partition("?")
+    ident = ""
+    if query:
+        qs = parse_qs(urlsplit(raw).query)
+        partes = [f"{k}={qs[k][0]}" for k in _PARAMS_IDENTIDAD_URL if k in qs]
+        if partes:
+            ident = "?" + "&".join(partes)
+    clean = (base + ident).lower()
     if not clean or clean in ("https://www.facebook.com", "https://facebook.com"):
         clean = f"{titulo[:80]}|{texto[:140]}".lower()
     return hashlib.sha256(clean.encode("utf-8")).hexdigest()[:32]

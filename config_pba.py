@@ -11,9 +11,11 @@ Incluye:
 - Filtros de no-conflictividad / ruido (gacetillas institucionales, autopromoción, operativos policiales de rutina).
 """
 
+import os
 import re
 import unicodedata
-from typing import Dict, List, Set, Tuple
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Set, Tuple
 
 # Los 135 partidos oficiales de la Provincia de Buenos Aires
 PARTIDOS_PBA: List[str] = [
@@ -159,6 +161,69 @@ LOCALIDADES_A_PARTIDO: Dict[str, str] = {
     "villa elvira": "La Plata",
     "san carlos la plata": "La Plata",
 }
+
+# Localidades cuyo nombre también es apellido o palabra común ("Juancho Martínez",
+# "libertad"). Solo cuentan si van precedidas de "en", "de", "barrio", etc.
+LOCALIDADES_AMBIGUAS: Set[str] = {
+    "martinez", "libertad", "don bosco", "san andres", "wilde", "hudson", "glew",
+}
+
+# Partidos de PBA que comparten nombre con departamentos/ciudades de otras provincias
+# (sobre todo Mendoza). Si el texto nombra otra provincia, no alcanzan como anclaje.
+PARTIDOS_NOMBRE_COMPARTIDO: Set[str] = {
+    "Maipú", "Rivadavia", "General Alvear", "Junín", "Colón", "Lavalle",
+    "General Las Heras", "San Pedro", "Mercedes", "Pila", "Monte", "Salto",
+    "General Paz", "Rojas", "Lobos", "Azul", "La Costa", "Puan",
+}
+
+# ---------------------------------------------------------------------------
+# FILTROS DE TEMAS QUE NO INTERESAN (editables)
+# ---------------------------------------------------------------------------
+# Meteorología: se descarta salvo que el texto hable de una protesta/reclamo concreto
+# (ej. "vecinos cortan la ruta por falta de luz tras el temporal" SÍ pasa).
+PATRONES_CLIMA: List[str] = [
+    "el temporal", "un temporal", "feroz temporal", "fuerte temporal", "del temporal",
+    "granizo", "granizada", "rafagas", "alerta amarilla", "alerta naranja",
+    "alerta meteorologica", "alerta por tormentas", "alerta por lluvias", "smn",
+    "servicio meteorologico", "pronostico", "tormenta", "tormentas", "lluvias intensas",
+    "ciclogenesis", "ola de calor", "sensacion termica", "vientos fuertes",
+]
+
+# Avisos clasificados, permutas, búsquedas laborales, ventas: siempre se descartan.
+PATRONES_CLASIFICADOS: List[str] = [
+    "permuta", "permutas", "vendo ", "se vende", "alquilo", "alquiler de",
+    "busco trabajo", "busco empleo", "preparador fisico", "precio:", "sorteo",
+    "consulto precio", "envios a todo el pais",
+]
+
+# Cuentas/fuentes que no se quieren nunca en el reporte (se busca en autor y título).
+FUENTES_BLOQUEADAS: List[str] = [
+    "polymarket", "apuestas", "casino", "bet365", "codere",
+]
+
+# Palabras que indican un conflicto/reclamo concreto (habilitan clima y sirven como
+# relevancia mínima para publicaciones que no matchean el diccionario).
+SENALES_CONFLICTO: List[str] = [
+    "reclamo", "reclaman", "reclamamos", "reclamando", "denuncia", "denuncian",
+    "protesta", "protestan", "marcha", "movilizacion", "corte de calle", "corte de ruta",
+    "cortan", "cortaron", "piquete", "cacerolazo", "ruidazo", "asamblea",
+    "autoconvocados", "autoconvocadas", "quema de gomas", "escrache",
+    "robo", "robaron", "roban", "asalto", "asaltaron", "entradera", "entraderas",
+    "motochorro", "motochorros", "tiros", "balacera", "baleado", "baleada", "disparos",
+    "homicidio", "asesinato", "asesinaron", "mataron", "femicidio", "desaparecido",
+    "desaparecida", "secuestro", "abuso", "violencia", "inseguridad", "narco",
+    "narcotrafico", "bunker", "usurpacion", "toma de tierras", "desalojo",
+    "sin luz", "sin agua", "despidos", "paro", "estafa", "zona liberada",
+    "justicia por", "piden justicia", "hartos", "abandonados", "basta de",
+    # Reclamos policiales internos
+    "sueldo", "sueldos", "salario", "salarial", "acuartelamiento", "acuartelados",
+    "sumario", "desafectado", "desafectaron", "traslado compulsivo", "horas cores",
+    "polad", "recargo", "francos", "ioma", "policia herido", "efectivo herido",
+    "murio un policia", "policia muerto",
+]
+
+# Antigüedad máxima (en horas) de una publicación para considerarla vigente.
+MAX_HORAS_ANTIGUEDAD: int = int(os.getenv("TERMOMETRO_MAX_HORAS", "72"))
 
 # Anclajes geográficos generales de 1ra pasada
 ANCLAJES_GENERALES_PBA: List[str] = [
@@ -449,30 +514,37 @@ def es_exclusion_geografica(texto: str, partido_objetivo: str = "") -> bool:
 
     # Verificar si menciona exclusiones de CABA o provincias
     menciona_otra_provincia_o_caba = False
+    t_norm_exc = quitar_tildes(t_lower)
     for exc in EXCLUSIONES_CABA + EXCLUSIONES_PROVINCIAS:
-        if exc.lower() in t_lower:
+        if contiene_frase(t_norm_exc, exc) or ("@" in t_lower and quitar_tildes(exc.lower()) in t_norm_exc):
             menciona_otra_provincia_o_caba = True
             break
 
-    # Verificar anclajes positivos explícitos de PBA
+    # Verificar anclajes positivos explícitos de PBA (siempre por palabra completa:
+    # antes "Salto" matcheaba dentro de "asalto" y "Pilar" dentro de "pilares").
+    t_norm = quitar_tildes(t_lower)
     tiene_anclaje_pba = False
-    if partido_objetivo and partido_objetivo.lower() != "provincia de buenos aires" and partido_objetivo.lower() in t_lower:
+
+    def _partido_sirve(p: str) -> bool:
+        if menciona_otra_provincia_o_caba and p in PARTIDOS_NOMBRE_COMPARTIDO:
+            return False
+        return contiene_frase(t_norm, p)
+
+    if partido_objetivo and partido_objetivo.lower() != "provincia de buenos aires" and _partido_sirve(partido_objetivo):
         tiene_anclaje_pba = True
     else:
-        for loc, part in LOCALIDADES_A_PARTIDO.items():
-            if loc in t_lower:
-                tiene_anclaje_pba = True
-                break
+        if _buscar_localidad(t_norm):
+            tiene_anclaje_pba = True
 
         if not tiene_anclaje_pba:
             for anclaje in ANCLAJES_GENERALES_PBA + ["pba", "zona sur", "zona oeste", "zona norte", "amba"]:
-                if anclaje.lower() in t_lower:
+                if contiene_frase(t_norm, anclaje):
                     tiene_anclaje_pba = True
                     break
 
         if not tiene_anclaje_pba:
             for p in PARTIDOS_PBA:
-                if len(p) > 4 and p.lower() in t_lower:
+                if len(p) > 3 and _partido_sirve(p):
                     tiene_anclaje_pba = True
                     break
 
@@ -506,19 +578,196 @@ def resolver_partido_geografico_preciso(texto: str, partido_sugerido: str = "") 
         if "hudson" in t_norm:
             return "Berazategui"
 
-    # Buscar localidades específicas
+    # Se elige la PRIMERA mención en el texto (antes ganaba el primer partido en orden
+    # alfabético de la lista, sin importar dónde apareciera).
+    candidatos: List[Tuple[int, str]] = []
     for loc, partido_real in LOCALIDADES_A_PARTIDO.items():
-        loc_norm = quitar_tildes(loc)
-        if re.search(r"\b" + re.escape(loc_norm) + r"\b", t_norm):
-            return partido_real
-
-    # Buscar partidos oficiales
+        pos = _posicion_localidad(t_norm, quitar_tildes(loc))
+        if pos >= 0:
+            candidatos.append((pos, partido_real))
     for partido in PARTIDOS_PBA:
-        p_norm = quitar_tildes(partido.lower())
-        if re.search(r"\b" + re.escape(p_norm) + r"\b", t_norm):
-            return partido
+        pos = posicion_frase(t_norm, partido)
+        if pos >= 0:
+            candidatos.append((pos, partido))
+    if candidatos:
+        candidatos.sort(key=lambda c: c[0])
+        return candidatos[0][1]
 
     return partido_sugerido or "Provincia de Buenos Aires"
+
+
+# ---------------------------------------------------------------------------
+# Utilidades de texto
+# ---------------------------------------------------------------------------
+
+def posicion_frase(texto_norm: str, frase: str) -> int:
+    """Posición de `frase` como palabra completa dentro de un texto ya normalizado
+    (minúsculas, sin tildes). Devuelve -1 si no aparece."""
+    f = quitar_tildes(frase.lower()).strip()
+    if not f:
+        return -1
+    m = re.search(r"(?<![\wñ])" + re.escape(f) + r"(?![\wñ])", texto_norm)
+    return m.start() if m else -1
+
+
+def contiene_frase(texto_norm: str, frase: str) -> bool:
+    return posicion_frase(texto_norm, frase) >= 0
+
+
+def _posicion_localidad(t_norm: str, loc_norm: str) -> int:
+    if loc_norm in LOCALIDADES_AMBIGUAS:
+        m = re.search(
+            r"(?:\ben|\bde|\bbarrio|\blocalidad de|\bzona de)\s+" + re.escape(loc_norm) + r"(?![\wñ])",
+            t_norm,
+        )
+        return m.start() if m else -1
+    return posicion_frase(t_norm, loc_norm)
+
+
+def _buscar_localidad(t_norm: str) -> str:
+    for loc, partido in LOCALIDADES_A_PARTIDO.items():
+        if _posicion_localidad(t_norm, quitar_tildes(loc)) >= 0:
+            return partido
+    return ""
+
+
+def texto_sin_comentarios(texto: str) -> str:
+    """Devuelve solo el cuerpo de la publicación, sin los comentarios que el scraper
+    concatena al final. Así el nombre de un comentarista ("Juancho Martínez") no
+    termina ubicando la publicación en San Isidro."""
+    if not texto:
+        return ""
+    for marca in ("\n\n💬", " [Comentarios:", "\n💬"):
+        if marca in texto:
+            texto = texto.split(marca, 1)[0]
+    return texto
+
+
+def es_tema_excluido(titulo: str, texto: str, autor: str = "") -> Tuple[bool, str]:
+    """Descarta clima, clasificados y fuentes bloqueadas. Devuelve (excluir, motivo)."""
+    cuerpo = quitar_tildes(f"{titulo} {texto_sin_comentarios(texto)}".lower())
+    autor_norm = quitar_tildes((autor or "").lower())
+
+    for f in FUENTES_BLOQUEADAS:
+        if f in autor_norm or f in cuerpo:
+            return True, f"Fuente bloqueada ({f})"
+
+    for p in PATRONES_CLASIFICADOS:
+        if contiene_frase(cuerpo, p.strip()) or (p.endswith(" ") and p in cuerpo):
+            return True, f"Aviso / clasificado ('{p.strip()}')"
+
+    if any(contiene_frase(cuerpo, p) for p in PATRONES_CLIMA):
+        if not any(contiene_frase(cuerpo, s) for s in (
+            "reclamo", "reclaman", "protesta", "corte de calle", "corte de ruta", "cortan",
+            "cortaron", "piquete", "cacerolazo", "marcha", "asamblea", "autoconvocados",
+        )):
+            return True, "Meteorología / clima sin reclamo asociado"
+
+    return False, ""
+
+
+def tiene_senal_conflicto(texto: str) -> bool:
+    t = quitar_tildes(texto_sin_comentarios(texto).lower())
+    return any(contiene_frase(t, s) for s in SENALES_CONFLICTO)
+
+
+# ---------------------------------------------------------------------------
+# Fechas de publicación
+# ---------------------------------------------------------------------------
+
+_MESES = {
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
+    "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9, "octubre": 10,
+    "noviembre": 11, "diciembre": 12,
+    "ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6, "jul": 7,
+    "ago": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dic": 12,
+}
+
+_UNIDADES_RELATIVAS = [
+    (r"(?:min|mins|minuto|minutos|m)", "minutes"),
+    (r"(?:h|hs|hora|horas)", "hours"),
+    (r"(?:d|dia|dias)", "days"),
+    (r"(?:sem|semana|semanas|w)", "weeks"),
+    (r"(?:a|ano|anos|y)", "years"),
+]
+
+
+def parsear_fecha_publicacion(texto: str, ahora: Optional[datetime] = None) -> Optional[datetime]:
+    """Interpreta las fechas que muestran Facebook / Instagram:
+    "Justo ahora", "5 min", "3 h", "2 d", "1 sem", "337w", "hace 3 horas", "Ayer a las 20:15",
+    "15 de octubre", "15 de octubre de 2024", "15 oct 2024".
+    Devuelve None si no la puede interpretar (nunca asume "ahora")."""
+    if not texto:
+        return None
+    ahora = ahora or datetime.now()
+    t = quitar_tildes(texto.lower()).strip()
+    t = re.sub(r"\s+", " ", t).replace("·", " ").strip()
+    t = re.sub(r"^hace\s+", "", t)
+
+    if t in ("justo ahora", "ahora", "just now", "un momento"):
+        return ahora
+    if t.startswith("ayer") or t.startswith("yesterday"):
+        return ahora - timedelta(days=1)
+
+    m = re.fullmatch(r"(\d{1,4})\s*([a-z]+)", t)
+    if m:
+        n = int(m.group(1))
+        unidad = m.group(2)
+        for patron, nombre in _UNIDADES_RELATIVAS:
+            if re.fullmatch(patron, unidad):
+                if nombre == "years":
+                    return ahora - timedelta(days=365 * n)
+                return ahora - timedelta(**{nombre: n})
+
+    m = re.search(r"(\d{1,2})\s+(?:de\s+)?([a-z]+)\.?(?:\s+(?:de\s+)?(\d{4}))?", t)
+    if m and m.group(2) in _MESES:
+        dia = int(m.group(1))
+        mes = _MESES[m.group(2)]
+        anio = int(m.group(3)) if m.group(3) else ahora.year
+        try:
+            fecha = datetime(anio, mes, dia)
+        except ValueError:
+            return None
+        if not m.group(3) and fecha > ahora + timedelta(days=1):
+            fecha = fecha.replace(year=anio - 1)
+        return fecha
+
+    return None
+
+
+def fecha_desde_id_tweet(url: str) -> Optional[datetime]:
+    """Las publicaciones de X llevan la fecha codificada en el ID (Snowflake)."""
+    m = re.search(r"/status/(\d{15,20})", url or "")
+    if not m:
+        return None
+    try:
+        ms = (int(m.group(1)) >> 22) + 1288834974657
+        return datetime.fromtimestamp(ms / 1000)
+    except (ValueError, OSError, OverflowError):
+        return None
+
+
+def fecha_publicacion_iso(valor: str, url: str = "") -> Optional[datetime]:
+    """Recupera la fecha real de un hallazgo: primero la guardada en ISO, si no la del
+    ID de X. Devuelve None si no hay fecha confiable."""
+    if valor:
+        try:
+            return datetime.fromisoformat(str(valor).strip()[:19])
+        except ValueError:
+            pass
+    return fecha_desde_id_tweet(url)
+
+
+def describir_fecha(fecha: Optional[datetime], ahora: Optional[datetime] = None) -> str:
+    if not fecha:
+        return "Fecha no verificada"
+    ahora = ahora or datetime.now()
+    horas = (ahora - fecha).total_seconds() / 3600
+    if horas < 1:
+        return "Hace menos de 1 h"
+    if horas < 24:
+        return f"Hace {int(horas)} h"
+    return fecha.strftime("%d/%m/%Y %H:%M")
 
 
 def resolver_eje_tematico_preciso(texto: str, categoria_sugerida: str = "") -> str:
@@ -528,20 +777,20 @@ def resolver_eje_tematico_preciso(texto: str, categoria_sugerida: str = "") -> s
     """
     t_norm = quitar_tildes(texto.lower())
 
-    if any(k in t_norm for k in [
+    if any(contiene_frase(t_norm, k) for k in [
         "puestos de trabajo", "conflicto laboral", "despidos", "fabrica",
         "cierre de planta", "sin luz", "falta de luz", "corte de luz",
         "edesur", "edenor", "sin agua", "baja presion", "colectivos", "uta"
     ]):
         return "sociales_servicios"
 
-    if any(k in t_norm for k in ["justicia por", "#justiciapor", "femicidio", "crimen de", "asesinato"]):
+    if any(contiene_frase(t_norm, k) for k in ["justicia por", "#justiciapor", "femicidio", "crimen de", "asesinato"]):
         return "justicia"
 
-    if any(k in t_norm for k in ["picadas", "juntada de motos", "fiesta clandestina"]):
+    if any(contiene_frase(t_norm, k) for k in ["picadas", "juntada de motos", "fiesta clandestina"]):
         return "eventos_no_autorizados"
 
-    if any(k in t_norm for k in ["violencia policial", "gatillo facil", "policia golpeo", "asuntos internos"]):
+    if any(contiene_frase(t_norm, k) for k in ["violencia policial", "gatillo facil", "policia golpeo", "asuntos internos"]):
         return "imagen_institucional"
 
     return categoria_sugerida or "seguridad"

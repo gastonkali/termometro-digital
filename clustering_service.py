@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Tuple
 from collections import Counter
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from config_pba import quitar_tildes, STOPWORDS_ES, resolver_partido_geografico_preciso, resolver_eje_tematico_preciso
+from config_pba import quitar_tildes, STOPWORDS_ES, resolver_partido_geografico_preciso, resolver_eje_tematico_preciso, texto_sin_comentarios
 
 
 TEMAS_CLAVE_CONOCIDOS = [
@@ -54,7 +54,7 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
         return []
 
     for h in hallazgos:
-        comb = f"{h.get('titulo', '')} {h.get('texto', '')}"
+        comb = texto_sin_comentarios(h.get('texto', '') or h.get('titulo', ''))
         h["partido"] = resolver_partido_geografico_preciso(comb, h.get("partido", ""))
         h["categoria"] = resolver_eje_tematico_preciso(comb, h.get("categoria", ""))
 
@@ -107,6 +107,13 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
 
                 if ("luz" in comb_i or "edesur" in comb_i) and ("luz" in comb_j or "edesur" in comb_j) and ("autopista" in comb_i and "autopista" in comb_j):
                     sim += 0.40
+
+                # Dos partidos distintos solo se agrupan si el texto es casi el mismo hecho
+                # (antes el temporal de Cañuelas se mezclaba con un post de Berisso).
+                genericos = ("", "Provincia de Buenos Aires", "PBA")
+                if part_i not in genericos and part_j not in genericos and part_i != part_j:
+                    if sim_matrix[i, j] < 0.6:
+                        continue
 
                 if sim >= umbral_similitud:
                     visitados[j] = True
@@ -172,7 +179,10 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
                 except Exception:
                     c_list = []
             if isinstance(c_list, list):
-                todos_comentarios.extend(c_list)
+                for c in c_list:
+                    c = str(c).strip().replace('"', "")
+                    if c and c not in todos_comentarios:
+                        todos_comentarios.append(c)
 
         if todos_comentarios:
             c_primer = str(todos_comentarios[0]).strip()
@@ -185,16 +195,10 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
             if len(c_texto) > 110:
                 c_texto = c_texto[:110].rsplit(" ", 1)[0] + "..."
             reaccion = f"Vecinos comentan: “{c_texto}”"
-        elif "cacerolazo" in comb_total or "corte de calle" in comb_total:
-            reaccion = "Vecinos cortaron la traza y convocan a un cacerolazo masivo."
-        elif "marcha" in comb_total or "reclamo" in comb_total:
-            reaccion = "Vecinos y familiares se movilizan en reclamo activo."
-        elif "cuestiona al gobernador" in comb_total or "baño de sangre" in comb_total:
-            reaccion = "Reclamos directos de usuarios en redes sociales."
-        elif any(it.get("es_convocatoria") for it in items_cluster):
-            reaccion = "Convocatoria vecinal activa con fecha y punto de encuentro."
         else:
-            reaccion = "Sin comentarios vecinales adicionales registrados."
+            # Antes se inventaba una frase ("Vecinos y familiares se movilizan en reclamo
+            # activo") cuando aparecía la palabra "reclamo". Solo se muestran comentarios reales.
+            reaccion = "Sin comentarios registrados."
 
         mods_unificados = set()
         for it in items_cluster:
@@ -213,6 +217,7 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
             "fuentes_nombres": fuentes_distintas,
             "total_fuentes": len(fuentes_distintas),
             "reaccion_vecinal": reaccion,
+            "comentarios_cluster": todos_comentarios,
             "representante": rep,
             "hallazgos_relacionados": items_cluster,
             "urls": list(set(it.get("url", "") for it in items_cluster if it.get("url")))
@@ -221,6 +226,8 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
     clusters.sort(key=lambda c: (
         2 if c["clima_estado"] == "EN ALERTA" else (1 if c["clima_estado"] == "MODERADO" else 0),
         c["total_fuentes"],
-        c["total_menciones"]
+        c["total_menciones"],
+        # A igual gravedad, primero lo que más reacción vecinal generó
+        len(c["comentarios_cluster"]),
     ), reverse=True)
     return clusters

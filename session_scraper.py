@@ -58,12 +58,105 @@ import re
 import urllib.parse
 
 
+JS_HELPERS_TARJETA = r"""() => {
+    if (window.__td) return;
+    const RE_FECHA = /^(justo ahora|ahora|ayer.*|hace .+|\d{1,3}\s*(min|h|d|sem|a|m|w|y)|\d{1,2}\s+(de\s+)?(ene|feb|mar|abr|may|jun|jul|ago|sep|set|oct|nov|dic)[a-z]*\.?(\s+(de\s+)?\d{4})?(\s+a las .*)?)$/i;
+    const esPost = h => /\/posts\/|\/permalink\/|story_fbid=|\/photo\/|\/photo\.php|fbid=|\/reel\/|\/videos\/|\/watch\/\?v=|\/share\/[pvr]\//.test(h);
+    const enComentario = el => !!el.closest('[aria-label^="Comentario de"], [aria-label*="Respuesta de"], [aria-label^="Comment by"], [aria-label*="Reply by"]');
+    const textoFecha = a => {
+        const cands = [a.getAttribute('aria-label') || '', (a.innerText || '').trim()];
+        const sub = a.querySelector('[aria-label]');
+        if (sub) cands.push(sub.getAttribute('aria-label') || '');
+        for (const c of cands) {
+            const t = (c || '').replace(/\s+/g, ' ').trim();
+            if (t && t.length < 45 && RE_FECHA.test(t)) return t;
+        }
+        return '';
+    };
+    function urlYFecha(card) {
+        // Nunca tomar enlaces que están dentro de los comentarios (fotos o perfiles de
+        // comentaristas): eso llevaba a "otra publicación".
+        const links = Array.from(card.querySelectorAll('a[href]')).filter(a => !enComentario(a));
+        // 1. El enlace de la fecha ("3 h", "15 de octubre") es el enlace propio del post.
+        for (const a of links) {
+            const h = a.href || '';
+            if (!esPost(h)) continue;
+            const f = textoFecha(a);
+            if (f) return { url: h, fecha: f };
+        }
+        let fecha = '';
+        for (const a of links) { const f = textoFecha(a); if (f) { fecha = f; break; } }
+        const prioridades = [
+            h => h.includes('/photo/') || h.includes('fbid='),
+            h => h.includes('/posts/'),
+            h => /\/share\/[pvr]\//.test(h),
+            h => h.includes('l.facebook.com/l.php') && h.includes('u='),
+            h => h.includes('/reel/') || h.includes('/watch/?v=') || h.includes('/videos/') || h.includes('story_fbid='),
+            h => h.includes('/permalink/') && !h.includes('/search/') && !h.includes('/hashtag/'),
+        ];
+        for (const p of prioridades) {
+            for (const a of links) { const h = a.href || ''; if (p(h)) return { url: h, fecha }; }
+        }
+        return { url: '', fecha };
+    }
+    window.__td = { urlYFecha };
+}"""
+
+
+def _inyectar_helpers_js(page) -> None:
+    try:
+        page.evaluate(JS_HELPERS_TARJETA)
+    except Exception:
+        pass
+
+
+def _resolver_fecha(fecha_txt: str, url: str = "") -> Tuple[str, bool]:
+    """Devuelve (fecha ISO o "", es_vieja). Una publicación sin fecha legible NO se
+    marca como "en vivo": queda como fecha no verificada."""
+    from config_pba import MAX_HORAS_ANTIGUEDAD, fecha_desde_id_tweet, parsear_fecha_publicacion
+
+    dt = parsear_fecha_publicacion(fecha_txt or "") or fecha_desde_id_tweet(url)
+    if not dt:
+        return "", False
+    vieja = (datetime.now() - dt).total_seconds() > MAX_HORAS_ANTIGUEDAD * 3600
+    return dt.isoformat(timespec="seconds"), vieja
+
+
+def _fecha_iso_externa(valor: str) -> Tuple[str, bool]:
+    """Convierte un datetime ISO con zona (Instagram / X) a hora local."""
+    from config_pba import MAX_HORAS_ANTIGUEDAD
+
+    if not valor:
+        return "", False
+    try:
+        dt = datetime.fromisoformat(valor.replace("Z", "+00:00"))
+        if dt.tzinfo:
+            dt = dt.astimezone().replace(tzinfo=None)
+    except ValueError:
+        return "", False
+    vieja = (datetime.now() - dt).total_seconds() > MAX_HORAS_ANTIGUEDAD * 3600
+    return dt.isoformat(timespec="seconds"), vieja
+
+
+def _url_grupo_cronologica(url: str) -> str:
+    # Por defecto los grupos muestran "Más relevantes" (posteos de hace semanas).
+    if "/groups/feed" in url or "sorting_setting" in url:
+        return url
+    return url.rstrip("/") + "/?sorting_setting=CHRONOLOGICAL"
+
+
 def copiar_enlace_compartir_facebook(page, card_locator) -> str:
     """
     Hace clic en 'Compartir' -> 'Copiar enlace' en la tarjeta de publicación
     para obtener el enlace canónico directo según el método oficial de Facebook.
     """
     try:
+        # Vaciar el portapapeles antes: si "Copiar enlace" falla en silencio, antes se
+        # leía el enlace de la publicación ANTERIOR y quedaba asignado a esta.
+        try:
+            page.evaluate("() => navigator.clipboard.writeText('')")
+        except Exception:
+            pass
         share_btn = card_locator.locator(
             'div[role="button"]:has-text("Compartir"), div[aria-label="Compartir"], div[aria-label*="Compartir esta publicación"]'
         ).last
@@ -240,48 +333,80 @@ def es_texto_basura_ui(autor: str, texto: str) -> bool:
     return False
 
 
-def extraer_comentarios_twitter(context, tweet_url: str, max_replies: int = 3) -> Tuple[List[str], str]:
+def _comentario_util(cuerpo: str, texto_post: str = "") -> bool:
+    """Descarta comentarios vacíos, solo etiquetas de personas, solo emojis/risas o que
+    repiten el texto de la publicación."""
+    c = re.sub(r"@\w+", "", cuerpo or "").strip()
+    if len(c) < 8:
+        return False
+    palabras = re.findall(r"[a-záéíóúñü]+", c.lower())
+    if len(palabras) < 2:
+        return False
+    if re.fullmatch(r"(?:[jJaAhHkK]{4,}\s*)+", c):
+        return False
+    # Solo nombres propios (alguien etiquetando a otra persona)
+    tokens = c.split()
+    if len(tokens) <= 4 and all(t[:1].isupper() for t in tokens if t[:1].isalpha()):
+        return False
+    if texto_post and c[:40].lower() in texto_post.lower():
+        return False
+    return True
+
+
+def extraer_comentarios_twitter(context, tweet_url: str, max_replies: int = 4) -> Tuple[List[str], str]:
     """
     Abre el tweet directo en una pestaña en segundo plano, extrae el texto completo
-    sin truncar y las respuestas/comentarios reales de los vecinos.
+    sin truncar y las respuestas reales (descarta las del propio autor y las vacías).
     """
     if not tweet_url or "/status/" not in tweet_url:
         return [], ""
-    replies = []
+    replies: List[str] = []
     main_text = ""
     p_tab = None
     try:
         p_tab = context.new_page()
-        p_tab.goto(tweet_url, timeout=18000, wait_until="domcontentloaded")
-        time.sleep(2.5)
-        p_tab.mouse.wheel(0, 400)
-        time.sleep(1)
+        p_tab.goto(tweet_url, timeout=20000, wait_until="domcontentloaded")
+        try:
+            p_tab.wait_for_selector('article[data-testid="tweet"]', timeout=12000)
+        except Exception:
+            return [], ""
+        for _ in range(2):
+            p_tab.mouse.wheel(0, 900)
+            time.sleep(1.2)
 
         res = p_tab.evaluate(r"""() => {
-            const out = [];
-            const arts = document.querySelectorAll('article[data-testid="tweet"]');
-            let mainTxt = '';
-            if (arts.length > 0) {
-                const mainEl = arts[0].querySelector('[data-testid="tweetText"]');
-                if (mainEl) mainTxt = (mainEl.innerText || '').trim();
+            const arts = Array.from(document.querySelectorAll('article[data-testid="tweet"]'));
+            const handle = el => {
+                const u = el.querySelector('[data-testid="User-Name"]');
+                if (!u) return ['', ''];
+                const partes = u.innerText.split('\n');
+                const h = partes.find(p => p.startsWith('@')) || '';
+                return [partes[0] || '', h];
+            };
+            let mainTxt = '', mainHandle = '';
+            if (arts.length) {
+                const el = arts[0].querySelector('[data-testid="tweetText"]');
+                if (el) mainTxt = (el.innerText || '').trim();
+                mainHandle = handle(arts[0])[1];
             }
-            for (let i = 1; i < arts.length && out.length < 3; i++) {
-                const userEl = arts[i].querySelector('[data-testid="User-Name"]');
-                const user = userEl ? userEl.innerText.split('\n')[0] : 'Vecino';
-                const textEl = arts[i].querySelector('[data-testid="tweetText"]');
-                if (textEl) {
-                    const txt = (textEl.innerText || '').trim().replace(/\n+/g, ' ');
-                    if (txt.length > 5) {
-                        out.push(`${user}: "${txt}"`);
-                    }
-                }
+            const out = [];
+            for (let i = 1; i < arts.length; i++) {
+                const [nombre, h] = handle(arts[i]);
+                if (h && h === mainHandle) continue;   // hilo del mismo autor, no es reacción
+                const t = arts[i].querySelector('[data-testid="tweetText"]');
+                if (!t) continue;
+                out.push({ autor: nombre || h || 'Usuario', texto: (t.innerText || '').trim().replace(/\n+/g, ' ') });
             }
             return { replies: out, mainText: mainTxt };
         }""")
-        replies = res.get("replies", [])
         main_text = res.get("mainText", "")
-    except Exception:
-        pass
+        for r in res.get("replies", []):
+            if _comentario_util(r.get("texto", ""), main_text):
+                replies.append(f"{r['autor']}: {r['texto']}")
+            if len(replies) >= max_replies:
+                break
+    except Exception as e:
+        print(f"  [Aviso X Respuestas]: {e}")
     finally:
         if p_tab:
             try:
@@ -291,32 +416,31 @@ def extraer_comentarios_twitter(context, tweet_url: str, max_replies: int = 3) -
     return replies, main_text
 
 
-def extraer_comentarios_facebook(context, post_url: str, max_comentarios: int = 4) -> List[str]:
+def extraer_comentarios_facebook(context, post_url: str, max_comentarios: int = 4, texto_post: str = "") -> List[str]:
     """
     Abre la URL directa del posteo en una pestaña en segundo plano, despliega
     los comentarios y extrae las intervenciones reales de vecinos/camaradas.
     """
     if not post_url or "facebook.com/search/" in post_url:
         return []
-    if not any(k in post_url for k in ["/photo/", "/posts/", "/permalink/", "fbid=", "/groups/", "/reel/"]):
+    if not any(k in post_url for k in ["/photo/", "/posts/", "/permalink/", "fbid=", "/groups/", "/reel/", "/share/", "story_fbid=", "/videos/", "/watch"]):
         return []
 
-    comentarios = []
+    comentarios: List[str] = []
     p_tab = None
     try:
         p_tab = context.new_page()
-        p_tab.goto(post_url, timeout=20000, wait_until="domcontentloaded")
+        p_tab.goto(post_url, timeout=25000, wait_until="domcontentloaded")
         time.sleep(3)
-        p_tab.mouse.wheel(0, 500)
+        p_tab.mouse.wheel(0, 600)
         time.sleep(1)
 
-        # Desplegar comentarios si están plegados
+        # Desplegar comentarios si están plegados (solo botones de comentarios)
         try:
             p_tab.evaluate(r"""() => {
-                document.querySelectorAll('div[aria-label*="Comentar la publicación"], div[aria-label*="comentarios"], span[role="button"], div[role="button"]').forEach(b => {
-                    const aria = b.getAttribute('aria-label') || '';
-                    const txt = b.innerText || '';
-                    if (aria.includes('comentarios') || txt.includes('comentarios') || txt.includes('Ver más respuestas') || txt.includes('Ver más comentarios') || txt === 'Ver más') {
+                document.querySelectorAll('div[role="button"], span[role="button"]').forEach(b => {
+                    const txt = (b.innerText || '').trim();
+                    if (/^Ver (más|los \d+|\d+) comentarios?/i.test(txt) || /^Ver más respuestas/i.test(txt) || /^View (more|all) comments/i.test(txt)) {
                         try { b.click(); } catch(e){}
                     }
                 });
@@ -325,26 +449,32 @@ def extraer_comentarios_facebook(context, post_url: str, max_comentarios: int = 
         except Exception:
             pass
 
-        comentarios = p_tab.evaluate(r"""() => {
+        crudos = p_tab.evaluate(r"""() => {
             const out = [];
-            const nodes = document.querySelectorAll('div[aria-label^="Comentario de"], div[aria-label*="Respuesta de"], div[role="article"]');
+            const UI = /^(\d+\s*(min|h|d|sem|a|s|m|w|y)|justo ahora|ahora|editado|autor|autora|seguir|unirte|responder|me gusta|compartir|ver traducción|ocultar|ver más|fan destacado|top fan|·)$/i;
+            const nodes = document.querySelectorAll('div[aria-label^="Comentario de"], div[aria-label^="Respuesta de"], div[aria-label^="Comment by"], div[aria-label^="Reply by"]');
             for (const n of nodes) {
-                const txt = (n.innerText || '').trim();
-                if (!txt || txt.length < 8 || txt.length > 400 || txt.includes('ordenar feed') || txt.startsWith('Facebook')) continue;
-                const lines = txt.split('\n').map(l => l.trim()).filter(l => l && !['Responder', 'Me gusta', 'Compartir', 'Ver más', 'Ver traducción', '·', 'Editado'].includes(l));
-                if (lines.length >= 2) {
-                    const cAuthor = lines[0];
-                    const cBody = lines.slice(1).filter(l => !l.includes('sem') && !l.includes('min') && !l.includes('h') && !l.includes('d')).join(' ');
-                    if (cBody.length > 2) {
-                        const clean = `${cAuthor}: "${cBody}"`;
-                        if (!out.includes(clean)) out.push(clean);
-                    }
-                } else if (lines.length === 1 && lines[0].length > 10) {
-                    if (!out.includes(lines[0])) out.push(lines[0]);
-                }
+                const aria = n.getAttribute('aria-label') || '';
+                let autor = aria.replace(/^(Comentario|Respuesta) de\s+/i, '').replace(/^(Comment|Reply) by\s+/i, '')
+                                .replace(/\s+(hace|ago)\b.*$/i, '').replace(/\s+\d+\s*\w*$/, '').trim();
+                const lines = (n.innerText || '').split('\n').map(l => l.trim()).filter(l => l && !UI.test(l));
+                if (!lines.length) continue;
+                if (!autor) autor = lines[0];
+                const cuerpo = lines.filter(l => l !== autor).join(' ').trim();
+                out.push({ autor, texto: cuerpo });
             }
-            return out.slice(0, 4);
+            return out;
         }""")
+        vistos = set()
+        for c in crudos:
+            cuerpo = c.get("texto", "")
+            clave = cuerpo[:60].lower()
+            if clave in vistos or not _comentario_util(cuerpo, texto_post):
+                continue
+            vistos.add(clave)
+            comentarios.append(f"{c.get('autor') or 'Vecino'}: {cuerpo}")
+            if len(comentarios) >= max_comentarios:
+                break
     except Exception as e:
         print(f"  [Aviso FB Comentarios]: {e}")
     finally:
@@ -354,6 +484,50 @@ def extraer_comentarios_facebook(context, post_url: str, max_comentarios: int = 
             except Exception:
                 pass
     return comentarios
+
+
+def completar_comentarios(context, posteos: List[Dict[str, Any]], max_posts: int = 8) -> None:
+    """
+    Lee los comentarios SOLO de las publicaciones que van a llegar al reporte (las que
+    pasan el clasificador), empezando por las más relevantes. Antes se abrían todas
+    (incluidas avisos y posts descartados) y nunca las de búsquedas públicas ni las de X.
+    """
+    from engine import clasificar_hallazgo
+
+    candidatos = []
+    for p in posteos:
+        try:
+            info = clasificar_hallazgo(
+                titulo=p.get("titulo", ""), texto=p.get("texto", ""),
+                categoria_forzada=p.get("categoria", ""), partido_objetivo=p.get("partido", ""),
+                pasada=p.get("pasada", "anclaje_general"),
+            )
+        except Exception:
+            info = None
+        if info:
+            candidatos.append((info.get("relevancia", 0), p))
+
+    candidatos.sort(key=lambda c: c[0], reverse=True)
+    leidos = 0
+    for _, p in candidatos:
+        if leidos >= max_posts:
+            break
+        url = p.get("url", "")
+        texto = p.get("texto", "")
+        if "/status/" in url:
+            replies, texto_completo = extraer_comentarios_twitter(context, url, max_replies=4)
+            if texto_completo and len(texto_completo) > len(texto):
+                p["texto"] = texto_completo
+            nuevos = replies
+        elif "facebook.com" in url or "fb.com" in url:
+            nuevos = extraer_comentarios_facebook(context, url, max_comentarios=4, texto_post=texto)
+        else:
+            continue
+        leidos += 1
+        previos = p.get("comentarios") or []
+        p["comentarios"] = (nuevos + [c for c in previos if c not in nuevos])[:4] if nuevos else previos
+        print(f"  💬 {len(p['comentarios'])} comentarios — {p.get('autor', '')[:30]}: {texto[:50]!r}")
+    print(f"  Comentarios leídos en {leidos} publicaciones relevantes (de {len(candidatos)} que pasan el filtro).")
 
 
 def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> List[Dict[str, Any]]:
@@ -387,6 +561,7 @@ def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> Lis
         except Exception:
             pass
 
+        _inyectar_helpers_js(page)
         raw_items = page.evaluate(r"""() => {
             const results = [];
             const seen = new Set();
@@ -428,51 +603,17 @@ def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> Lis
                     }
                 }
 
-                let directUrl = '';
-                const links = Array.from(card.querySelectorAll('a[href]'));
-                for (const a of links) {
-                    const h = a.href || '';
-                    if (h.includes('/photo/') || h.includes('fbid=')) { directUrl = h; break; }
-                }
-                if (!directUrl) {
-                    for (const a of links) {
-                        const h = a.href || '';
-                        if (h.includes('/posts/')) { directUrl = h; break; }
-                    }
-                }
-                if (!directUrl) {
-                    for (const a of links) {
-                        const h = a.href || '';
-                        if (h.includes('/share/p/') || h.includes('/share/v/') || h.includes('/share/r/')) { directUrl = h; break; }
-                    }
-                }
-                if (!directUrl) {
-                    for (const a of links) {
-                        const h = a.href || '';
-                        if (h.includes('l.facebook.com/l.php') && h.includes('u=')) { directUrl = h; break; }
-                    }
-                }
-                if (!directUrl) {
-                    for (const a of links) {
-                        const h = a.href || '';
-                        if (h.includes('/reel/') || h.includes('/watch/?v=') || h.includes('/videos/') || h.includes('story_fbid=')) { directUrl = h; break; }
-                    }
-                }
-                if (!directUrl) {
-                    for (const a of links) {
-                        const h = a.href || '';
-                        if (!h.includes('/search/') && !h.includes('/hashtag/') && !h.includes('/home.php') && !h.includes('/stories/') && !h.includes('/share/g/')) {
-                            if (h.includes('/permalink/')) { directUrl = h; break; }
-                        }
-                    }
-                }
+                const _uf = window.__td.urlYFecha(card);
+                const directUrl = _uf.url;
+                const fechaTxt = _uf.fecha;
                 if (!directUrl) continue;
 
                 results.push({
                     autor: autor,
                     texto: texto,
                     url: directUrl,
-                    imgUrl: imgUrl
+                    imgUrl: imgUrl,
+                    fechaTxt: fechaTxt
                 });
             }
 
@@ -495,6 +636,9 @@ def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> Lis
             url_final = limpiar_url_fb(item.get("url"))
             if not url_final or not es_url_publicacion_valida(url_final):
                 continue
+            fecha_iso, es_vieja = _resolver_fecha(item.get("fechaTxt"), url_final)
+            if es_vieja:
+                continue
 
             primer_renglon = txt.split("\n")[0][:75].strip()
             comentarios = []
@@ -511,7 +655,7 @@ def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> Lis
                 "texto": texto_con_comentarios,
                 "comentarios": comentarios,
                 "imagen_url": item.get("imgUrl", ""),
-                "fecha_publicacion": "Detectado en vivo con mi sesión"
+                "fecha_publicacion": fecha_iso
             })
             if len(posteos) >= max_items:
                 break
@@ -522,29 +666,73 @@ def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> Lis
     return posteos
 
 
-def extraer_posteos_twitter(page, url_busqueda: str, max_items: int = 8) -> List[Dict[str, Any]]:
+def normalizar_url_busqueda_x(url_busqueda: str) -> str:
+    """Garantiza que lang:es y las exclusiones estén dentro de q y que f=live
+    ("Más recientes") quede intacto, aunque la URL venga armada a mano."""
+    partes = urllib.parse.urlsplit(url_busqueda)
+    qs = urllib.parse.parse_qs(partes.query)
+    q = (qs.get("q") or [""])[0]
+    f = (qs.get("f") or ["live"])[0]
+    # Reparar URLs viejas donde los filtros quedaron pegados al parámetro f
+    if f != "live":
+        q = f"{q} {f.replace('live', '', 1)}".strip()
+        f = "live"
+    for extra in ("lang:es", "-filter:replies", "-CABA", "-Cordoba", "-Madrid"):
+        if extra.lower() not in q.lower():
+            q += f" {extra}"
+    query = urllib.parse.urlencode({"q": " ".join(q.split()), "src": "typed_query", "f": f})
+    return urllib.parse.urlunsplit(("https", "x.com", "/search", query, ""))
+
+
+def diagnosticar_pagina_x(page) -> str:
+    """Explica por qué una búsqueda de X no mostró tweets (sin sesión, bloqueo, sin resultados)."""
+    url = page.url or ""
+    if "/login" in url or "i/flow/login" in url or "/i/flow/" in url:
+        return "SIN SESIÓN: X redirigió al login. Corré `python session_scraper.py --login` e iniciá sesión en X."
+    try:
+        if page.locator('iframe[src*="arkose"], iframe[id*="arkose"]').count() > 0:
+            return "BLOQUEO: X pide verificación humana (captcha). Abrí X a mano en ese perfil y resolvelo."
+        cuerpo = (page.inner_text("body") or "").lower()
+    except Exception:
+        cuerpo = ""
+    if any(t in cuerpo for t in ["confirma que eres humano", "verify you are human", "comprueba que eres humano"]):
+        return "BLOQUEO: X pide verificación humana (captcha). Abrí X a mano en ese perfil y resolvelo."
+    if any(t in cuerpo for t in ["iniciar sesión", "inicia sesión", "sign in", "log in"]) and "buscar" not in cuerpo:
+        return "SIN SESIÓN: la página pide iniciar sesión. Corré `python session_scraper.py --login`."
+    if any(t in cuerpo for t in ["no hay resultados", "no results for", "sin resultados"]):
+        return "SIN RESULTADOS: X no encontró tweets recientes para esta búsqueda."
+    if any(t in cuerpo for t in ["algo salió mal", "something went wrong", "rate limit", "límite"]):
+        return "ERROR DE X: 'Algo salió mal' o límite de uso. Suele pasar en modo headless o por demasiadas búsquedas."
+    if not cuerpo.strip():
+        return "PÁGINA VACÍA: X no cargó (posible detección del modo headless)."
+    return "X cargó pero no mostró tweets (motivo desconocido)."
+
+
+def extraer_posteos_twitter(page, url_busqueda: str, max_items: int = 8, verbose: bool = False, partido_objetivo: str = "") -> List[Dict[str, Any]]:
     """
     Navega a la búsqueda de X/Twitter en vivo y extrae tweets recientes en español de PBA.
+    Imprime un resumen con cuántos tweets vio y por qué descartó cada uno.
     """
-    from config_pba import es_exclusion_geografica, es_texto_espanol
+    from config_pba import es_exclusion_geografica, es_tema_excluido, es_texto_espanol
 
     tweets = []
+    descartes: Dict[str, int] = {}
+
+    def _descartar(motivo: str, texto: str = "") -> None:
+        descartes[motivo] = descartes.get(motivo, 0) + 1
+        if verbose:
+            print(f"    ✗ {motivo}: {texto[:90]!r}")
+
     try:
-        # Asegurar parámetros de idioma español y excluir CABA / Córdoba / Madrid
-        if "lang%3Aes" not in url_busqueda and "lang:es" not in url_busqueda:
-            url_busqueda += "+lang%3Aes+-filter%3Areplies+-CABA+-Cordoba+-Madrid"
-
+        url_busqueda = normalizar_url_busqueda_x(url_busqueda)
         page.goto(url_busqueda, timeout=35000, wait_until="domcontentloaded")
-        time.sleep(3)
 
-        # Verificar solo si hay un bloqueo real visible y no hay tweets
+        # X es una SPA: esperar a que aparezcan los tweets en lugar de 3 s fijos
         try:
-            if page.locator('article[data-testid="tweet"]').count() == 0:
-                if page.locator('iframe[src*="arkose"], iframe[id*="arkose"]').count() > 0 or any(term in (page.inner_text("body") or "").lower() for term in ["confirma que eres humano", "verify you are human", "comprueba que eres humano"]):
-                    print("  ⚠️ [Aviso X/Twitter]: Se detectó solicitud de verificación humana en X.")
-                    return []
+            page.wait_for_selector('article[data-testid="tweet"]', timeout=15000)
         except Exception:
-            pass
+            print(f"  ⚠️ [X] 0 tweets — {diagnosticar_pagina_x(page)}")
+            return []
 
         for _ in range(2):
             page.mouse.wheel(0, 1200)
@@ -565,33 +753,66 @@ def extraer_posteos_twitter(page, url_busqueda: str, max_items: int = 8) -> List
                 # Extraer texto del tweet
                 text_el = art.locator('[data-testid="tweetText"]').first
                 if not text_el.count():
+                    _descartar("sin texto (solo imagen/video)")
                     continue
                 texto = text_el.inner_text().strip()
                 if len(texto) < 25:
+                    _descartar("texto muy corto", texto)
                     continue
 
                 # Filtrar idioma estrictamente español
                 if not es_texto_espanol(texto):
+                    _descartar("no está en español", texto)
+                    continue
+
+                excluir, motivo = es_tema_excluido("", texto)
+                if excluir:
+                    _descartar(motivo, texto)
                     continue
 
                 # Filtrar exclusión geográfica de PBA
-                if es_exclusion_geografica(texto):
+                if es_exclusion_geografica(texto, partido_objetivo):
+                    _descartar("sin lugar de PBA en el texto / otra provincia", texto)
                     continue
 
                 # Extraer autor real
                 author_el = art.locator('[data-testid="User-Name"]').first
                 autor = author_el.inner_text().split("\n")[0].strip() if author_el.count() else "Usuario X"
 
-                # Enlace directo al tweet
-                links = art.locator('a[href*="/status/"]').all()
-                if not links:
-                    continue
-                href = links[0].get_attribute("href")
+                # Enlace directo al tweet: el <a> que contiene la hora es el del tweet
+                # principal (no el de un tweet citado ni el de /photo/ o /analytics).
+                href = None
+                time_link = art.locator('a[href*="/status/"]:has(time)').first
+                if time_link.count():
+                    href = time_link.get_attribute("href")
                 if not href:
+                    links = art.locator('a[href*="/status/"]').all()
+                    href = links[0].get_attribute("href") if links else None
+                if not href:
+                    _descartar("sin enlace al tweet", texto)
                     continue
+                m_status = re.search(r"^(.*?/status/\d+)", href)
+                if m_status:
+                    href = m_status.group(1)
                 enlace = f"https://x.com{href}" if not href.startswith("http") else href
                 if not es_url_publicacion_valida(enlace):
                     continue
+
+                fecha_iso = ""
+                time_el = art.locator("time").first
+                dt_attr = time_el.get_attribute("datetime") if time_el.count() else None
+                if dt_attr:
+                    try:
+                        fecha_iso = datetime.fromisoformat(dt_attr.replace("Z", "+00:00")).astimezone().replace(tzinfo=None).isoformat(timespec="seconds")
+                    except ValueError:
+                        fecha_iso = ""
+                if not fecha_iso:
+                    fecha_iso, _ = _resolver_fecha("", enlace)
+                if fecha_iso:
+                    from config_pba import MAX_HORAS_ANTIGUEDAD
+                    if (datetime.now() - datetime.fromisoformat(fecha_iso)).total_seconds() > MAX_HORAS_ANTIGUEDAD * 3600:
+                        _descartar(f"más viejo que {MAX_HORAS_ANTIGUEDAD} h", texto)
+                        continue
 
                 img_el = art.locator('div[data-testid="tweetPhoto"] img').first
                 img_url = img_el.get_attribute("src") if img_el.count() else ""
@@ -611,12 +832,17 @@ def extraer_posteos_twitter(page, url_busqueda: str, max_items: int = 8) -> List
                     "texto": texto_con_comentarios,
                     "comentarios": comentarios_tw,
                     "imagen_url": img_url,
-                    "fecha_publicacion": "En vivo"
+                    "fecha_publicacion": fecha_iso
                 })
+                if verbose:
+                    print(f"    ✓ {autor}: {texto[:90]!r}")
                 if len(tweets) >= max_items:
                     break
-            except Exception:
+            except Exception as e_art:
+                _descartar(f"error leyendo tweet ({type(e_art).__name__})")
                 continue
+        detalle = ", ".join(f"{k}: {v}" for k, v in descartes.items()) or "ninguno"
+        print(f"  [X] {len(articulos)} tweets vistos → {len(tweets)} aceptados. Descartados: {detalle}")
     except Exception as e:
         print(f"[X Session] Error navegando: {e}")
 
@@ -681,7 +907,7 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
         g_url = g_info["url"]
         try:
             print(f"  👥 Explorando grupo: {g_nombre} ({g_url})...")
-            page.goto(g_url, timeout=30000, wait_until="domcontentloaded")
+            page.goto(_url_grupo_cronologica(g_url), timeout=30000, wait_until="domcontentloaded")
             time.sleep(3.5)
             for _ in range(3):
                 page.mouse.wheel(0, 1500)
@@ -694,18 +920,12 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
                         const txt = (b.innerText || '').trim();
                         if (txt.includes('Ver más')) { try { b.click(); } catch(e){} }
                     });
-                    document.querySelectorAll('div[aria-label*="Comentar la publicación"], div[aria-label*="comentarios"], span[role="button"], div[role="button"]').forEach(b => {
-                        const aria = b.getAttribute('aria-label') || '';
-                        const txt = b.innerText || '';
-                        if (aria.includes('comentarios') || txt.includes('comentarios') || txt.includes('Ver más respuestas') || txt.includes('Ver más comentarios') || txt.includes('respuestas')) {
-                            try { b.click(); } catch(e){}
-                        }
-                    });
                 }""")
                 time.sleep(2)
             except Exception:
                 pass
 
+            _inyectar_helpers_js(page)
             items = page.evaluate(r"""() => {
                 const out = [];
                 const feed = document.querySelector('div[role="feed"]');
@@ -731,51 +951,10 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
                         if (aLink) autor = (aLink.innerText || '').trim();
                     }
 
-                    let directUrl = '';
-                    const links = Array.from(card.querySelectorAll('a[href]'));
-                    // 1. Foto con fbid (prioridad máxima por estabilidad de URL)
-                    for (const a of links) {
-                        const h = a.href || '';
-                        if (h.includes('/photo/') || h.includes('fbid=')) { directUrl = h; break; }
-                    }
-                    // 2. Post directo
-                    if (!directUrl) {
-                        for (const a of links) {
-                            const h = a.href || '';
-                            if (h.includes('/posts/')) { directUrl = h; break; }
-                        }
-                    }
-                    // 3. Compartir oficial de post / reel / video
-                    if (!directUrl) {
-                        for (const a of links) {
-                            const h = a.href || '';
-                            if (h.includes('/share/p/') || h.includes('/share/v/') || h.includes('/share/r/')) { directUrl = h; break; }
-                        }
-                    }
-                    // 4. Enlace externo compartido
-                    if (!directUrl) {
-                        for (const a of links) {
-                            const h = a.href || '';
-                            if (h.includes('l.facebook.com/l.php') && h.includes('u=')) { directUrl = h; break; }
-                        }
-                    }
-                    // 5. Video o reel
-                    if (!directUrl) {
-                        for (const a of links) {
-                            const h = a.href || '';
-                            if (h.includes('/reel/') || h.includes('/watch/?v=') || h.includes('/videos/') || h.includes('story_fbid=')) { directUrl = h; break; }
-                        }
-                    }
-                    // 6. Permalink interno como fallback
-                    if (!directUrl) {
-                        for (const a of links) {
-                            const h = a.href || '';
-                            if (!h.includes('/search/') && !h.includes('/hashtag/') && !h.includes('/home.php') && !h.includes('/stories/') && !h.includes('/share/g/')) {
-                                if (h.includes('/permalink/')) { directUrl = h; break; }
-                            }
-                        }
-                    }
-                    if (!directUrl) continue;
+                    const _uf = window.__td.urlYFecha(card);
+                const directUrl = _uf.url;
+                const fechaTxt = _uf.fecha;
+                if (!directUrl) continue;
 
                     let imgUrl = '';
                     for (const im of Array.from(card.querySelectorAll('img'))) {
@@ -792,14 +971,14 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
                         const lines = ctxt.split('\n').map(l => l.trim()).filter(l => l && !['Responder', 'Me gusta', 'Compartir', 'Ver traducción', '·', 'Editado'].includes(l));
                         if (lines.length >= 2) {
                             const cAuthor = lines[0];
-                            const cBody = lines.slice(1).filter(l => !l.includes('sem') && !l.includes('min') && !l.includes('h') && !l.includes('d')).join(' ');
+                            const cBody = lines.slice(1).filter(l => !/^(\d+\s*(min|h|d|sem|a|s|m|w|y)|justo ahora|ahora|editado|autor|seguir|unirte|responder|me gusta|compartir|ver traducción|ocultar|ver más|·)$/i.test(l)).join(' ');
                             if (cBody.length > 2 && cBody !== msg) {
-                                comments.push(`${cAuthor}: "${cBody}"`);
+                                comments.push(`${cAuthor}: ${cBody}`);
                             }
                         }
                     }
 
-                    out.push({ autor, texto: msg, directUrl, imgUrl, comments: comments.slice(0, 4) });
+                    out.push({ autor, texto: msg, directUrl, imgUrl, fechaTxt, comments: comments.slice(0, 4) });
                 }
                 return out;
             }""")
@@ -833,11 +1012,12 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
 
                 if not url_fin or not es_url_publicacion_valida(url_fin):
                     continue
+                fecha_iso, es_vieja = _resolver_fecha(it.get("fechaTxt"), url_fin)
+                if es_vieja:
+                    continue
                 partido_det = detectar_partido_en_texto(f"{g_nombre} {autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
 
-                comentarios = it.get("comments") or []
-                if not comentarios and url_fin and any(k in url_fin for k in ["/photo/", "/posts/", "/permalink/", "fbid="]):
-                    comentarios = extraer_comentarios_facebook(page.context, url_fin, max_comentarios=3)
+                comentarios = [c for c in (it.get("comments") or []) if _comentario_util(c.split(":", 1)[-1], txt)]
 
                 texto_full = txt
                 if comentarios:
@@ -855,7 +1035,7 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
                     "partido": partido_det,
                     "categoria": g_info.get("categoria", "seguridad"),
                     "pasada": "grupos_vecinales",
-                    "fecha_publicacion": "En vivo desde mis grupos"
+                    "fecha_publicacion": fecha_iso
                 })
                 items_grupo += 1
                 if items_grupo >= max_items_por_grupo:
@@ -905,18 +1085,12 @@ def extraer_posteos_referentes_policiales(page, max_items: int = 5) -> List[Dict
                         const txt = (b.innerText || '').trim();
                         if (txt.includes('Ver más')) { try { b.click(); } catch(e){} }
                     });
-                    document.querySelectorAll('div[aria-label*="Comentar la publicación"], div[aria-label*="comentarios"], span[role="button"], div[role="button"]').forEach(b => {
-                        const aria = b.getAttribute('aria-label') || '';
-                        const txt = b.innerText || '';
-                        if (aria.includes('comentarios') || txt.includes('comentarios') || txt.includes('Ver más respuestas') || txt.includes('Ver más comentarios') || txt.includes('respuestas')) {
-                            try { b.click(); } catch(e){}
-                        }
-                    });
                 }""")
                 time.sleep(2)
             except Exception:
                 pass
 
+            _inyectar_helpers_js(page)
             items = page.evaluate(r"""() => {
                 const out = [];
                 const feed = document.querySelector('div[role="feed"]');
@@ -942,45 +1116,10 @@ def extraer_posteos_referentes_policiales(page, max_items: int = 5) -> List[Dict
                         if (aLink) autor = (aLink.innerText || '').trim();
                     }
 
-                    let directUrl = '';
-                    const links = Array.from(card.querySelectorAll('a[href]'));
-                    for (const a of links) {
-                        const h = a.href || '';
-                        if (h.includes('/photo/') || h.includes('fbid=')) { directUrl = h; break; }
-                    }
-                    if (!directUrl) {
-                        for (const a of links) {
-                            const h = a.href || '';
-                            if (h.includes('/posts/')) { directUrl = h; break; }
-                        }
-                    }
-                    if (!directUrl) {
-                        for (const a of links) {
-                            const h = a.href || '';
-                            if (h.includes('/share/p/') || h.includes('/share/v/') || h.includes('/share/r/')) { directUrl = h; break; }
-                        }
-                    }
-                    if (!directUrl) {
-                        for (const a of links) {
-                            const h = a.href || '';
-                            if (h.includes('l.facebook.com/l.php') && h.includes('u=')) { directUrl = h; break; }
-                        }
-                    }
-                    if (!directUrl) {
-                        for (const a of links) {
-                            const h = a.href || '';
-                            if (h.includes('/reel/') || h.includes('/watch/?v=') || h.includes('/videos/') || h.includes('story_fbid=')) { directUrl = h; break; }
-                        }
-                    }
-                    if (!directUrl) {
-                        for (const a of links) {
-                            const h = a.href || '';
-                            if (!h.includes('/search/') && !h.includes('/hashtag/') && !h.includes('/home.php') && !h.includes('/stories/') && !h.includes('/share/g/')) {
-                                if (h.includes('/permalink/')) { directUrl = h; break; }
-                            }
-                        }
-                    }
-                    if (!directUrl) continue;
+                    const _uf = window.__td.urlYFecha(card);
+                const directUrl = _uf.url;
+                const fechaTxt = _uf.fecha;
+                if (!directUrl) continue;
 
                     let imgUrl = '';
                     for (const im of Array.from(card.querySelectorAll('img'))) {
@@ -997,14 +1136,14 @@ def extraer_posteos_referentes_policiales(page, max_items: int = 5) -> List[Dict
                         const lines = ctxt.split('\n').map(l => l.trim()).filter(l => l && !['Responder', 'Me gusta', 'Compartir', 'Ver traducción', '·', 'Editado'].includes(l));
                         if (lines.length >= 2) {
                             const cAuthor = lines[0];
-                            const cBody = lines.slice(1).filter(l => !l.includes('sem') && !l.includes('min') && !l.includes('h') && !l.includes('d')).join(' ');
+                            const cBody = lines.slice(1).filter(l => !/^(\d+\s*(min|h|d|sem|a|s|m|w|y)|justo ahora|ahora|editado|autor|seguir|unirte|responder|me gusta|compartir|ver traducción|ocultar|ver más|·)$/i.test(l)).join(' ');
                             if (cBody.length > 2 && cBody !== msg) {
-                                comments.push(`${cAuthor}: "${cBody}"`);
+                                comments.push(`${cAuthor}: ${cBody}`);
                             }
                         }
                     }
 
-                    out.push({ autor, texto: msg, directUrl, imgUrl, comments: comments.slice(0, 4) });
+                    out.push({ autor, texto: msg, directUrl, imgUrl, fechaTxt, comments: comments.slice(0, 4) });
                 }
                 return out;
             }""")
@@ -1035,11 +1174,12 @@ def extraer_posteos_referentes_policiales(page, max_items: int = 5) -> List[Dict
 
                 if not url_fin or not es_url_publicacion_valida(url_fin):
                     continue
+                fecha_iso, es_vieja = _resolver_fecha(it.get("fechaTxt"), url_fin)
+                if es_vieja:
+                    continue
                 partido_det = detectar_partido_en_texto(f"{autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
 
-                comentarios = it.get("comments") or []
-                if not comentarios and url_fin and any(k in url_fin for k in ["/photo/", "/posts/", "/permalink/", "fbid="]):
-                    comentarios = extraer_comentarios_facebook(page.context, url_fin, max_comentarios=3)
+                comentarios = [c for c in (it.get("comments") or []) if _comentario_util(c.split(":", 1)[-1], txt)]
 
                 texto_full = txt
                 if comentarios:
@@ -1057,7 +1197,7 @@ def extraer_posteos_referentes_policiales(page, max_items: int = 5) -> List[Dict
                     "partido": partido_det,
                     "categoria": "seguridad",
                     "pasada": "referentes_policiales",
-                    "fecha_publicacion": "En vivo desde referente policial"
+                    "fecha_publicacion": fecha_iso
                 })
                 if len(posteos) >= max_items:
                     break
@@ -1084,6 +1224,7 @@ def extraer_posteos_facebook_amigos(page, max_items: int = 5) -> List[Dict[str, 
             page.mouse.wheel(0, 1500)
             time.sleep(1.2)
 
+        _inyectar_helpers_js(page)
         items = page.evaluate(r"""() => {
             const feed = document.querySelector('div[role="feed"]') || document.querySelector('div[role="main"]');
             const cards = feed ? Array.from(feed.children) : [];
@@ -1107,44 +1248,9 @@ def extraer_posteos_facebook_amigos(page, max_items: int = 5) -> List[Dict[str, 
                 const texto = bodyLines.join('\n');
                 if (texto.length < 25) continue;
 
-                let directUrl = '';
-                const links = Array.from(card.querySelectorAll('a[href]'));
-                for (const a of links) {
-                    const h = a.href || '';
-                    if (h.includes('/photo/') || h.includes('fbid=')) { directUrl = h; break; }
-                }
-                if (!directUrl) {
-                    for (const a of links) {
-                        const h = a.href || '';
-                        if (h.includes('/posts/')) { directUrl = h; break; }
-                    }
-                }
-                if (!directUrl) {
-                    for (const a of links) {
-                        const h = a.href || '';
-                        if (h.includes('/share/p/') || h.includes('/share/v/') || h.includes('/share/r/')) { directUrl = h; break; }
-                    }
-                }
-                if (!directUrl) {
-                    for (const a of links) {
-                        const h = a.href || '';
-                        if (h.includes('l.facebook.com/l.php') && h.includes('u=')) { directUrl = h; break; }
-                    }
-                }
-                if (!directUrl) {
-                    for (const a of links) {
-                        const h = a.href || '';
-                        if (h.includes('/reel/') || h.includes('/watch/?v=') || h.includes('/videos/') || h.includes('story_fbid=')) { directUrl = h; break; }
-                    }
-                }
-                if (!directUrl) {
-                    for (const a of links) {
-                        const h = a.href || '';
-                        if (!h.includes('/search/') && !h.includes('/hashtag/') && !h.includes('/home.php') && !h.includes('/stories/') && !h.includes('/share/g/')) {
-                            if (h.includes('/permalink/')) { directUrl = h; break; }
-                        }
-                    }
-                }
+                const _uf = window.__td.urlYFecha(card);
+                const directUrl = _uf.url;
+                const fechaTxt = _uf.fecha;
                 if (!directUrl) continue;
 
                 let imgUrl = '';
@@ -1156,7 +1262,7 @@ def extraer_posteos_facebook_amigos(page, max_items: int = 5) -> List[Dict[str, 
                     }
                 }
 
-                out.push({ autor, texto, imgUrl, directUrl });
+                out.push({ autor, texto, imgUrl, directUrl, fechaTxt });
             }
             return out;
         }""")
@@ -1188,11 +1294,12 @@ def extraer_posteos_facebook_amigos(page, max_items: int = 5) -> List[Dict[str, 
 
             if not url_fin or not es_url_publicacion_valida(url_fin):
                 continue
+            fecha_iso, es_vieja = _resolver_fecha(it.get("fechaTxt"), url_fin)
+            if es_vieja:
+                continue
             partido_det = detectar_partido_en_texto(f"{autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
 
             comentarios = []
-            if url_fin and any(k in url_fin for k in ["/photo/", "/posts/", "/permalink/", "fbid="]):
-                comentarios = extraer_comentarios_facebook(page.context, url_fin, max_comentarios=3)
 
             texto_full = txt
             if comentarios:
@@ -1210,7 +1317,7 @@ def extraer_posteos_facebook_amigos(page, max_items: int = 5) -> List[Dict[str, 
                 "partido": partido_det,
                 "categoria": "sociales_servicios",
                 "pasada": "feed_amigos",
-                "fecha_publicacion": "Feed de amigos en vivo"
+                "fecha_publicacion": fecha_iso
             })
             if len(posteos) >= max_items:
                 break
@@ -1282,8 +1389,10 @@ def extraer_posteos_instagram(page, max_items: int = 6) -> List[Dict[str, Any]]:
                             }
                         }
                         const text = (a.innerText || '').trim();
+                        const tEl = a.querySelector('time[datetime]');
+                        const fechaIso = tEl ? tEl.getAttribute('datetime') : '';
                         if (text.length > 25) {
-                            out.push({ autor: autor || 'Instagram', url: postUrl, imgUrl: imgUrl, texto: text });
+                            out.push({ autor: autor || 'Instagram', url: postUrl, imgUrl: imgUrl, texto: text, fechaIso });
                         }
                         if (out.length >= 3) break;
                     }
@@ -1297,6 +1406,9 @@ def extraer_posteos_instagram(page, max_items: int = 6) -> List[Dict[str, Any]]:
                     if not post_url or not es_url_publicacion_valida(post_url):
                         continue
                     autor = it.get("autor", "Contacto en Instagram")
+                    fecha_iso, es_vieja = _fecha_iso_externa(it.get("fechaIso"))
+                    if es_vieja:
+                        continue
                     partido_det = detectar_partido_en_texto(f"{autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
                     primer_renglon = txt.split("\n")[0][:75].strip()
                     posteos.append({
@@ -1310,7 +1422,7 @@ def extraer_posteos_instagram(page, max_items: int = 6) -> List[Dict[str, Any]]:
                         "partido": partido_det,
                         "categoria": "seguridad",
                         "pasada": "instagram_amigos",
-                        "fecha_publicacion": "Feed de Instagram en vivo"
+                        "fecha_publicacion": fecha_iso
                     })
                     if len(posteos) >= max_items:
                         break
@@ -1351,13 +1463,18 @@ def extraer_posteos_instagram(page, max_items: int = 6) -> List[Dict[str, Any]]:
                                     if (w > 120 || !w) { imgUrl = s; break; }
                                 }
                             }
-                            return { autor, texto, imgUrl };
+                            const tEl = document.querySelector('time[datetime]');
+                            const fechaIso = tEl ? tEl.getAttribute('datetime') : '';
+                            return { autor, texto, imgUrl, fechaIso };
                         }""")
 
                         txt_ig = det.get("texto", "").strip()
                         if not txt_ig or len(txt_ig) < 25 or not es_texto_espanol(txt_ig) or es_exclusion_geografica(txt_ig):
                             continue
                         autor_ig = det.get("autor") or "Instagram PBA"
+                        fecha_iso, es_vieja = _fecha_iso_externa(det.get("fechaIso"))
+                        if es_vieja:
+                            continue
                         partido_det = detectar_partido_en_texto(f"{autor_ig} {txt_ig}", partido_por_defecto="Provincia de Buenos Aires")
                         primer_renglon = txt_ig.split("\n")[0][:75].strip()
                         posteos.append({
@@ -1371,7 +1488,7 @@ def extraer_posteos_instagram(page, max_items: int = 6) -> List[Dict[str, Any]]:
                             "partido": partido_det,
                             "categoria": "seguridad",
                             "pasada": "instagram_hashtags",
-                            "fecha_publicacion": "Hashtags Instagram en vivo"
+                            "fecha_publicacion": fecha_iso
                         })
                     except Exception:
                         pass
@@ -1437,7 +1554,7 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
 
             if item.get("tw_url"):
                 print(f"[{idx}/{len(matriz)}] Buscando en X: {item['partido']}...")
-                tw_posts = extraer_posteos_twitter(page, item["tw_url"], max_items=2)
+                tw_posts = extraer_posteos_twitter(page, item["tw_url"], max_items=2, partido_objetivo=item.get("partido", ""))
                 for t_item in tw_posts:
                     t_item["partido"] = item["partido"]
                     t_item["pasada"] = item["pasada"]
@@ -1465,6 +1582,10 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
         print("\n📸 Explorando feed de seguidos y hashtags en Instagram...")
         ig_posts = extraer_posteos_instagram(page, max_items=5)
         total_recolectados.extend(ig_posts)
+
+        # Fase 5: reacción vecinal — comentarios de las publicaciones relevantes
+        print("\n💬 Leyendo comentarios de las publicaciones que van al reporte...")
+        completar_comentarios(context, total_recolectados, max_posts=int(os.getenv("TERMOMETRO_MAX_POSTS_COMENTARIOS", "8")))
 
     finally:
         context.close()
@@ -1519,7 +1640,7 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
                 grupos_dest = conn.execute(
                     """
                     SELECT id, fuente, autor, partido, titulo, texto, url, imagen_url FROM hallazgos
-                    WHERE (edicion_id = ? OR id > (SELECT COALESCE(MAX(id)-25, 0) FROM hallazgos))
+                    WHERE edicion_id = ?
                       AND (pasada IN ('grupos_vecinales', 'feed_amigos', 'referentes_policiales', 'instagram_amigos')
                            OR fuente LIKE '%Grupo%' OR fuente LIKE '%Amigos%' OR fuente LIKE '%Virginia%')
                       AND url NOT LIKE '%facebook.com'
@@ -1587,14 +1708,33 @@ def modo_login():
         print("✓ Sesiones guardadas correctamente en user_session_browser.")
 
 
+def probar_x(consulta: str, headless: bool = False) -> None:
+    """Corre UNA búsqueda en X, muestra cada tweet aceptado/descartado y no guarda nada."""
+    from engine import construir_url_twitter_search
+
+    url = construir_url_twitter_search(consulta)
+    print(f"🔎 Probando X con: {consulta}\n   URL: {normalizar_url_busqueda_x(url)}\n")
+    p, context = lanzar_navegador_sesion(headless=headless)
+    try:
+        page = context.pages[0] if context.pages else context.new_page()
+        tweets = extraer_posteos_twitter(page, url, max_items=20, verbose=True)
+        print(f"\nResultado: {len(tweets)} tweets pasarían al reporte.")
+    finally:
+        context.close()
+        p.stop()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Scraper con sesión abierta para Termómetro Digital")
     parser.add_argument("--login", action="store_true", help="Abrir navegador para iniciar sesión una única vez")
     parser.add_argument("--headless", action="store_true", help="Correr en segundo plano sin ventana visible")
     parser.add_argument("--max-consultas", type=int, default=5, help="Cantidad de consultas a ejecutar")
+    parser.add_argument("--probar-x", metavar="CONSULTA", help='Probar una búsqueda en X sin guardar nada (ej: "La Matanza inseguridad")')
     args = parser.parse_args()
 
-    if args.login:
+    if args.probar_x:
+        probar_x(args.probar_x, headless=args.headless)
+    elif args.login:
         modo_login()
     else:
         ejecutar_ciclo_recoleccion(headless=args.headless, max_consultas=args.max_consultas)

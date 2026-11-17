@@ -28,11 +28,16 @@ from config_pba import (
     PARTIDOS_CONURBANO,
     PARTIDOS_PBA,
     STOPWORDS_ES,
+    contiene_frase,
     es_exclusion_geografica,
+    es_tema_excluido,
     es_texto_basura_ui,
     es_url_publicacion_valida,
     generar_variantes_termino,
     quitar_tildes,
+    resolver_partido_geografico_preciso,
+    texto_sin_comentarios,
+    tiene_senal_conflicto,
 )
 from database import (
     cerrar_edicion,
@@ -105,8 +110,11 @@ def construir_url_facebook_search(query: str, solo_recientes: bool = True) -> st
 
 
 def construir_url_twitter_search(query: str) -> str:
-    q_encoded = urllib.parse.quote(f"{query} -filter:replies")
-    return f"https://x.com/search?q={q_encoded}&f=live"
+    # Todos los filtros van DENTRO de q. Antes el scraper los pegaba al final de la URL
+    # y caían en el parámetro f ("f=live+lang%3Aes..."): X no reconocía "live" y mostraba
+    # "Destacados" (tweets populares viejos) en vez de "Más recientes".
+    q = f"{query} lang:es -filter:replies -CABA -Cordoba -Madrid"
+    return f"https://x.com/search?q={urllib.parse.quote(q)}&src=typed_query&f=live"
 
 
 def construir_url_instagram_search(query: str) -> str:
@@ -121,12 +129,10 @@ def construir_url_google_search(query: str) -> str:
 
 
 def detectar_partido_en_texto(texto: str, partido_por_defecto: str = "") -> str:
-    t_lower = quitar_tildes(texto.lower())
-    for partido in PARTIDOS_PBA:
-        p_norm = quitar_tildes(partido.lower())
-        if re.search(r"\b" + re.escape(p_norm) + r"\b", t_lower):
-            return partido
-    return partido_por_defecto or "Provincia de Buenos Aires"
+    # Primera mención real (localidad o partido) en el cuerpo, sin comentarios.
+    return resolver_partido_geografico_preciso(
+        texto_sin_comentarios(texto), partido_por_defecto or "Provincia de Buenos Aires"
+    )
 
 
 def detectar_modificadores_agenda(texto: str) -> List[str]:
@@ -229,9 +235,14 @@ def clasificar_hallazgo(
     anclaje_usado: str = "",
     pasada: str = "anclaje_general",
 ) -> Optional[Dict[str, Any]]:
-    combinado = f"{titulo} {texto}".strip()
+    # Solo el cuerpo de la publicación: los comentarios no deben decidir tema ni lugar.
+    combinado = f"{titulo} {texto_sin_comentarios(texto)}".strip()
 
     if es_texto_basura_ui(titulo, texto):
+        return None
+
+    excluir, _motivo = es_tema_excluido(titulo, texto)
+    if excluir:
         return None
 
     if es_exclusion_geografica(combinado, partido_objetivo):
@@ -249,8 +260,9 @@ def clasificar_hallazgo(
         for cat_key, cat_info in diccionario.items():
             for term in cat_info["terminos"]:
                 for var in generar_variantes_termino(term):
-                    v_low = var.lower()
-                    if v_low in comb_lower or quitar_tildes(v_low) in comb_sin_tilde:
+                    # Palabra completa: antes "UTA" matcheaba en "ruta", "Edes" en "redes"
+                    # y "paro" en "disparo", y casi todo caía en "sociales / laboral".
+                    if contiene_frase(comb_sin_tilde, var.lstrip("#")):
                         categoria_detectada = cat_key
                         termino_detectado = term
                         variante_usada = var
@@ -260,10 +272,15 @@ def clasificar_hallazgo(
             if termino_detectado:
                 break
 
-    if pasada == "pasada_abierta" and not termino_detectado:
-        categoria_detectada = inferir_categoria_por_contexto(comb_lower)
-        termino_detectado = "vecinos (pasada abierta)"
-        variante_usada = "vecinos"
+    if not termino_detectado:
+        # Antes, todo lo que no matcheaba el diccionario entraba igual como "monitoreo
+        # general" (por eso aparecían permutas, avisos y el clima). Ahora tiene que haber
+        # al menos una señal concreta de conflicto o reclamo.
+        if not tiene_senal_conflicto(combinado):
+            return None
+        categoria_detectada = inferir_categoria_por_contexto(comb_lower) if not categoria_forzada else categoria_detectada
+        termino_detectado = "vecinos (pasada abierta)" if pasada == "pasada_abierta" else "señal de conflicto"
+        variante_usada = termino_detectado
 
     partido = detectar_partido_en_texto(combinado, partido_objetivo)
     modificadores = detectar_modificadores_agenda(combinado)
@@ -709,11 +726,9 @@ def ingerir_posteos_directos_facebook(
 
     for p in posteos:
         titulo = p.get("titulo") or p.get("autor") or "Publicación Vecinal"
-        texto = p.get("texto", "")
-        # Si incluye comentarios, concatenarlos para análisis de agenda
-        comentarios = p.get("comentarios", [])
-        if comentarios and isinstance(comentarios, list):
-            texto += " [Comentarios: " + " | ".join(str(c) for c in comentarios) + "]"
+        # El texto se guarda limpio: los comentarios van en su propio campo
+        # (antes se pegaban al texto y terminaban mezclados en el PDF).
+        texto = texto_sin_comentarios(p.get("texto", ""))
 
         partido_obj = p.get("partido", "")
         pasada = p.get("pasada", "anclaje_general")
