@@ -28,16 +28,32 @@ API_INGEST_URL = "http://127.0.0.1:5055/api/ingest"
 
 def lanzar_navegador_sesion(headless: bool = False):
     """
-    Inicia un contexto de navegador persistente donde tus sesiones
-    de Facebook, X e Instagram quedan guardadas.
+    Inicia o se conecta a un contexto de navegador persistente.
+    Si el navegador permanente está abierto (puerto 9222), se conecta
+    directamente vía CDP sin abrir ni cerrar ventanas, manteniendo la ventana
+    de X activa para evitar que se disparen chequeos anti-bot.
     """
     p = sync_playwright().start()
+
+    # 1. Intentar conectar al navegador permanente ya abierto (CDP 9222)
+    try:
+        browser_cdp = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
+        context = browser_cdp.contexts[0] if browser_cdp.contexts else browser_cdp
+        setattr(context, "_es_cdp", True)
+        setattr(context, "_browser_cdp", browser_cdp)
+        print("  🌐 Conectado al navegador permanente ya abierto (CDP 9222) — ventana de X activa.")
+        return p, context
+    except Exception:
+        pass
+
+    # 2. Si no hay navegador en 9222, lanzar contexto persistente tradicional
     launch_kwargs = {
         "user_data_dir": SESSION_DIR,
         "headless": headless,
         "viewport": {"width": 1280, "height": 850},
         "permissions": ["clipboard-read", "clipboard-write"],
         "args": [
+            "--remote-debugging-port=9222",
             "--disable-blink-features=AutomationControlled",
             "--start-maximized"
         ]
@@ -51,6 +67,7 @@ def lanzar_navegador_sesion(headless: bool = False):
         context = p.chromium.launch_persistent_context(
             **launch_kwargs
         )
+    setattr(context, "_es_cdp", False)
     return p, context
 
 
@@ -2001,7 +2018,8 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
 
             if item.get("tw_url"):
                 print(f"[{idx}/{len(matriz)}] Buscando en X: {item['partido']}...")
-                tw_posts = extraer_posteos_twitter(page, item["tw_url"], max_items=2, partido_objetivo=item.get("partido", ""))
+                page_x = next((pg for pg in context.pages if "x.com" in pg.url or "twitter.com" in pg.url), page)
+                tw_posts = extraer_posteos_twitter(page_x, item["tw_url"], max_items=2, partido_objetivo=item.get("partido", ""))
                 for t_item in tw_posts:
                     t_item["partido"] = item["partido"]
                     t_item["pasada"] = item["pasada"]
@@ -2012,42 +2030,61 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
 
         # Fase 2: Grupos policiales y vecinales de PBA
         print("\n👥 Explorando grupos policiales y vecinales en Facebook...")
+        page_fb = next((pg for pg in context.pages if "facebook.com" in pg.url), page)
         fb_grupos = extraer_posteos_facebook_grupos(
-            page, max_grupos=int(os.getenv("TERMOMETRO_GRUPOS_POR_CORRIDA", "6")), max_items_por_grupo=2
+            page_fb, max_grupos=int(os.getenv("TERMOMETRO_GRUPOS_POR_CORRIDA", "6")), max_items_por_grupo=2
         )
         total_recolectados.extend(fb_grupos)
 
         # Fase 2.5: Referentes Policiales y Virginia Luján Sosa
         print("\n👮 Monitoreando referentes policiales y Virginia Luján Sosa...")
-        fb_sosa = extraer_posteos_referentes_policiales(page, max_items=4)
+        fb_sosa = extraer_posteos_referentes_policiales(page_fb, max_items=4)
         total_recolectados.extend(fb_sosa)
 
         # Fase 3: Feed de amigos y contactos en Facebook
         print("\n👤 Explorando feed de amigos y contactos en Facebook...")
-        fb_amigos = extraer_posteos_facebook_amigos(page, max_items=int(os.getenv("TERMOMETRO_MAX_FEED_FB", "8")))
+        fb_amigos = extraer_posteos_facebook_amigos(page_fb, max_items=int(os.getenv("TERMOMETRO_MAX_FEED_FB", "8")))
         total_recolectados.extend(fb_amigos)
 
         # Fase 3b: cuentas que seguís en X (pestaña "Siguiendo")
         if os.getenv("TERMOMETRO_X_SEGUIDOS", "1") != "0":
             print("\n🐦 Revisando las cuentas que seguís en X...")
-            total_recolectados.extend(extraer_posteos_x_seguidos(page, max_items=int(os.getenv("TERMOMETRO_MAX_X_SEGUIDOS", "8"))))
+            page_x = next((pg for pg in context.pages if "x.com" in pg.url or "twitter.com" in pg.url), page)
+            total_recolectados.extend(extraer_posteos_x_seguidos(page_x, max_items=int(os.getenv("TERMOMETRO_MAX_X_SEGUIDOS", "8"))))
 
         # Fase 4: Feed de seguidos y hashtags bonaerenses en Instagram
         print("\n📸 Explorando feed de seguidos y hashtags en Instagram...")
-        ig_posts = extraer_posteos_instagram(page, max_items=int(os.getenv("TERMOMETRO_MAX_FEED_IG", "8")))
+        page_ig = next((pg for pg in context.pages if "instagram.com" in pg.url), page)
+        ig_posts = extraer_posteos_instagram(page_ig, max_items=int(os.getenv("TERMOMETRO_MAX_FEED_IG", "8")))
         total_recolectados.extend(ig_posts)
 
         # Fase 4b: cuentas de Instagram configuradas (noticias locales que seguís)
         print("\n📸 Revisando cuentas de Instagram configuradas...")
-        total_recolectados.extend(extraer_posteos_instagram_cuentas(page))
+        total_recolectados.extend(extraer_posteos_instagram_cuentas(page_ig))
 
         # Fase 5: reacción vecinal — comentarios de las publicaciones relevantes
         print("\n💬 Leyendo comentarios de las publicaciones que van al reporte...")
         completar_comentarios(context, total_recolectados, max_posts=int(os.getenv("TERMOMETRO_MAX_POSTS_COMENTARIOS", "8")))
 
     finally:
-        context.close()
-        p.stop()
+        if getattr(context, "_es_cdp", False):
+            try:
+                for pg in context.pages:
+                    if "x.com" in pg.url and "/search" in pg.url:
+                        pg.goto("https://x.com/home", wait_until="domcontentloaded")
+            except Exception:
+                pass
+            b_cdp = getattr(context, "_browser_cdp", None)
+            if b_cdp:
+                try:
+                    b_cdp.close()
+                except Exception:
+                    pass
+            p.stop()
+            print("  🌐 Desconectado de navegador permanente. La ventana de X permanece abierta.")
+        else:
+            context.close()
+            p.stop()
 
     print(f"\n✓ Recolección finalizada. Total de publicaciones capturadas: {len(total_recolectados)}")
 
