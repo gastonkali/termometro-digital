@@ -33,7 +33,7 @@ GOOGLE_NEWS_RSS = "https://news.google.com/rss/search"
 # Google devuelve hasta 100 notas por consulta: con grupos chicos los partidos con mucha
 # actividad (Quilmes, La Matanza) no tapan a los demas.
 PARTIDOS_POR_CONSULTA = int(os.getenv("TERMOMETRO_PARTIDOS_POR_CONSULTA", "5"))
-VENTANA_BUSQUEDA = os.getenv("TERMOMETRO_NOTICIAS_VENTANA", "2d")  # sintaxis when: de Google
+VENTANA_BUSQUEDA = os.getenv("TERMOMETRO_NOTICIAS_VENTANA", "1d")  # sintaxis when: de Google
 MAX_NOTICIAS_POR_CORRIDA = int(os.getenv("TERMOMETRO_MAX_NOTICIAS", "60"))
 PAUSA_ENTRE_CONSULTAS = 1.5
 
@@ -99,6 +99,84 @@ def buscar_google_news(consulta: str, timeout: int = 20) -> List[Dict[str, Any]]
             "descripcion": desc if desc and titulo[:40].lower() not in desc.lower() else "",
         })
     return notas
+
+
+BING_NEWS_RSS = "https://www.bing.com/news/search"
+RESOLVER_LINKS = os.getenv("TERMOMETRO_RESOLVER_LINKS", "1") == "1"
+PAUSA_RESOLVER = 1.0
+
+
+def es_link_google_news(url: str) -> bool:
+    return "news.google.com/" in (url or "")
+
+
+def _normalizar_titulo(t: str) -> str:
+    t = html.unescape(t or "").lower()
+    t = re.sub(r"[^\w\s]", " ", t)
+    return " ".join(t.split())
+
+
+def _similitud_titulos(a: str, b: str) -> float:
+    """Proporción de palabras del título buscado que aparecen en el encontrado."""
+    pa = {w for w in _normalizar_titulo(a).split() if len(w) > 2}
+    pb = {w for w in _normalizar_titulo(b).split() if len(w) > 2}
+    if not pa or not pb:
+        return 0.0
+    return len(pa & pb) / min(len(pa), len(pb))
+
+
+def _dominio_coincide_con_medio(url: str, medio: str) -> bool:
+    """'TN' ↔ tn.com.ar, 'Diario El Día de La Plata' ↔ eldia.com, 'La Plata 1' ↔ laplata1.com."""
+    import unicodedata
+    dominio = urllib.parse.urlparse(url).netloc.lower().removeprefix("www.")
+    base = dominio.split(".")[0]
+    m = unicodedata.normalize("NFKD", medio.lower()).encode("ascii", "ignore").decode()
+    m = re.sub(r"\.(com|net|org)(\.ar)?$", "", m.strip())
+    palabras = [w for w in re.findall(r"[a-z0-9]+", m) if w not in ("diario", "de", "la", "el", "los", "las", "del", "noticias")]
+    junto = "".join(re.findall(r"[a-z0-9]+", m))
+    if not base:
+        return False
+    if junto and (junto in base or base in junto):
+        return True
+    # Palabras consecutivas pegadas: "El Día" ↔ eldia, "Perspectiva Sur" ↔ perspectivasur
+    todas = re.findall(r"[a-z0-9]+", m)
+    for n in (2, 3):
+        for i in range(len(todas) - n + 1):
+            pegado = "".join(todas[i:i + n])
+            if len(pegado) >= 5 and pegado in base:
+                return True
+    return any(len(w) >= 4 and w in base for w in palabras)
+
+
+def resolver_link_directo(titulo: str, medio: str = "", timeout: int = 15) -> str:
+    """Los links de Google Noticias (news.google.com/rss/articles/...) son redirecciones
+    que muchas veces no abren (sobre todo desde el celular o el PDF). Busca el mismo
+    titular en el RSS de Bing Noticias, que trae la URL real del medio, y la devuelve
+    solo si el titular coincide. Devuelve "" si no la encuentra."""
+    if not titulo:
+        return ""
+    url = BING_NEWS_RSS + "?" + urllib.parse.urlencode(
+        {"q": titulo[:150], "format": "rss", "setlang": "es", "cc": "AR"}
+    )
+    try:
+        resp = requests.get(url, timeout=timeout, headers={"User-Agent": "Mozilla/5.0 (TermometroDigital)"})
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+    except Exception:
+        return ""
+    mejor, mejor_sim = "", 0.0
+    for item in root.findall(".//item")[:10]:
+        link = (item.findtext("link") or "").strip()
+        real = urllib.parse.parse_qs(urllib.parse.urlparse(link).query).get("url", [""])[0] or link
+        if not real.startswith("http") or "bing.com/" in real:
+            continue
+        # Solo el link del mismo medio: si no, la nota quedaría atribuida a otro diario
+        if medio and not _dominio_coincide_con_medio(real, medio):
+            continue
+        sim = _similitud_titulos(titulo, item.findtext("title") or "")
+        if sim > mejor_sim:
+            mejor, mejor_sim = real, sim
+    return mejor if mejor_sim >= 0.7 else ""
 
 
 def filtrar_nota(nota: Dict[str, Any]) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
@@ -175,6 +253,21 @@ def recolectar_noticias(
     # Más recientes primero, con tope por corrida
     aceptadas.sort(key=lambda n: n["fecha_publicacion"], reverse=True)
     aceptadas = aceptadas[:max_noticias]
+
+    # Cambiar los links de Google Noticias por el del medio (si se encuentra)
+    if RESOLVER_LINKS:
+        resueltos = 0
+        for n in aceptadas:
+            if not es_link_google_news(n["url"]):
+                continue
+            titular = n["titulo"][len(n["autor"]) + 2:] if n["titulo"].startswith(f"{n['autor']}: ") else n["titulo"]
+            directo = resolver_link_directo(titular, n["autor"])
+            if directo:
+                n["url"] = directo
+                resueltos += 1
+            time.sleep(PAUSA_RESOLVER)
+        print(f"  [Noticias] Links directos al medio: {resueltos}/{len(aceptadas)}")
+
     detalle = ", ".join(f"{k}: {v}" for k, v in sorted(descartes.items(), key=lambda x: -x[1])) or "ninguno"
     print(f"  [Noticias] {len(consultas)} consultas → {len(aceptadas)} notas aceptadas. Descartadas: {detalle}")
     return aceptadas

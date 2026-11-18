@@ -315,7 +315,11 @@ CUENTAS_INSTAGRAM += [
 MAX_POSTS_POR_CUENTA_IG: int = int(os.getenv("TERMOMETRO_POSTS_POR_CUENTA_IG", "3"))
 
 # Antigüedad máxima (en horas) de una publicación para considerarla vigente.
-MAX_HORAS_ANTIGUEDAD: int = int(os.getenv("TERMOMETRO_MAX_HORAS", "72"))
+# 24 h = solo noticias del día (antes 72 h: se colaban notas de 3 días atrás).
+MAX_HORAS_ANTIGUEDAD: int = int(os.getenv("TERMOMETRO_MAX_HORAS", "24"))
+# Si es 1, una publicación sin fecha legible se descarta (antes quedaba como
+# "Fecha no verificada" y así entraban posteos viejos). Poner 0 para conservarlas.
+EXIGIR_FECHA_VERIFICADA: bool = os.getenv("TERMOMETRO_EXIGIR_FECHA", "1") == "1"
 
 # ---------------------------------------------------------------------------
 # IMPORTANCIA DE UN HECHO (editable)

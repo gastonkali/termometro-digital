@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from database import get_conn
 from clustering_service import agrupar_en_clusters
 from config_pba import (
+    EXIGIR_FECHA_VERIFICADA,
     HORAS_VENTANA_REPLICAS,
     MAX_HORAS_ANTIGUEDAD,
     describir_fecha,
@@ -237,7 +238,6 @@ def clasificar_descartes_y_vigentes(hallazgos_raw: List[Dict[str, Any]]) -> Tupl
                 vieja = True
                 fecha_str = fecha_pub.strftime("%d/%m/%Y")
         else:
-            # Sin fecha confiable: solo se descarta si el texto menciona un año anterior.
             anio_actual = datetime.now().year
             m_fecha = re.search(r"\b(20[12]\d)\b", comb)
             if m_fecha and int(m_fecha.group(1)) < anio_actual - 1:
@@ -246,6 +246,10 @@ def clasificar_descartes_y_vigentes(hallazgos_raw: List[Dict[str, Any]]) -> Tupl
             elif "hace 2 años" in comb_low or "hace un año" in comb_low:
                 vieja = True
                 fecha_str = "años anteriores"
+            elif EXIGIR_FECHA_VERIFICADA:
+                # Sin fecha confiable no se puede asegurar que sea del día: se descarta.
+                vieja = True
+                fecha_str = "sin fecha verificable"
         if vieja:
             descartados.append({
                 "publicacion": f"{h.get('autor') or h.get('fuente', 'Redes')} ({h.get('fuente', 'Web')})",
@@ -276,13 +280,14 @@ def generar_html_reporte(
             (corte_iso,),
         ).fetchall()
         edicion_str = f"Consolidado {horas_atras}hs"
+        # Solo lo del período (antes se sumaban nombres y palabras de días anteriores)
         nombres_rows_raw = conn.execute(
-            "SELECT * FROM nombres_propios WHERE creado_en >= ? OR vigente = 1 ORDER BY (creado_en >= ?) DESC, id DESC LIMIT 5",
-            (corte_iso, corte_iso),
+            "SELECT * FROM nombres_propios WHERE creado_en >= ? ORDER BY id DESC LIMIT 10",
+            (corte_iso,),
         ).fetchall()
         propuestas_rows_raw = conn.execute(
-            "SELECT * FROM palabras_candidatas WHERE actualizado_en >= ? OR estado = 'observando' ORDER BY (actualizado_en >= ?) DESC, id DESC LIMIT 5",
-            (corte_iso, corte_iso),
+            "SELECT * FROM palabras_candidatas WHERE actualizado_en >= ? ORDER BY id DESC LIMIT 10",
+            (corte_iso,),
         ).fetchall()
     else:
         hallazgos_rows = conn.execute(
@@ -290,13 +295,14 @@ def generar_html_reporte(
             (edicion_id,),
         ).fetchall()
         edicion_str = f"Edición #{edicion_id or 1}"
+        # Solo lo visto en esta edición (antes se sumaban nombres y palabras viejos)
         nombres_rows_raw = conn.execute(
-            "SELECT * FROM nombres_propios WHERE ultima_edicion_id = ? OR vigente = 1 ORDER BY (ultima_edicion_id = ?) DESC, id DESC LIMIT 5",
-            (edicion_id, edicion_id),
+            "SELECT * FROM nombres_propios WHERE ultima_edicion_id = ? ORDER BY id DESC LIMIT 10",
+            (edicion_id,),
         ).fetchall()
         propuestas_rows_raw = conn.execute(
-            "SELECT * FROM palabras_candidatas WHERE ultima_edicion_id = ? OR estado = 'observando' ORDER BY (ultima_edicion_id = ?) DESC, id DESC LIMIT 5",
-            (edicion_id, edicion_id),
+            "SELECT * FROM palabras_candidatas WHERE ultima_edicion_id = ? ORDER BY id DESC LIMIT 10",
+            (edicion_id,),
         ).fetchall()
     conn.close()
     nombres_rows = [dict(r) for r in nombres_rows_raw]
@@ -935,7 +941,7 @@ def generar_html_reporte(
     html += f"""
       </tbody>
     </table>
-    <div class="clarification-note">Fechas: tomadas de la propia publicación (Facebook / Instagram) o del ID de X. "Fecha no verificada" = la red no la mostró legible. Se descartan publicaciones de más de {MAX_HORAS_ANTIGUEDAD} h.<br/>Orden por importancia: gravedad del hecho y repercusión (cuántas fuentes distintas lo publicaron en las últimas {HORAS_VENTANA_REPLICAS} h, comentarios y compartidos). Una repercusión MEDIA lleva un hecho a MODERADO como mínimo; una ALTA lo sube un nivel.</div>
+    <div class="clarification-note">Fechas: tomadas de la propia publicación (Facebook / Instagram), del ID de X o de la fecha del medio. Se descartan publicaciones de más de {MAX_HORAS_ANTIGUEDAD} h{" y las que no muestran fecha legible" if EXIGIR_FECHA_VERIFICADA else ' ("Fecha no verificada" = la red no la mostró legible)'}.<br/>Orden por importancia: gravedad del hecho y repercusión (cuántas fuentes distintas lo publicaron en las últimas {HORAS_VENTANA_REPLICAS} h, comentarios y compartidos). Una repercusión MEDIA lleva un hecho a MODERADO como mínimo; una ALTA lo sube un nivel.</div>
 
     <!-- DESTACADO -->
     <div class="section-title">Destacado</div>
@@ -1134,12 +1140,32 @@ def generar_html_reporte(
 
     filas_anexo_figuras = 0
 
+    # No repetir en el anexo publicaciones descartadas (p. ej. viejas) ni hechos que ya
+    # figuran en las tablas de arriba, y mostrar una sola fila por publicación de origen.
+    urls_excluidas_anexo = {(d.get("url") or "").strip() for d in descartados_items}
+    for c in clusters_vigentes:
+        urls_excluidas_anexo.update(u.strip() for u in c.get("urls") or [])
+    urls_excluidas_anexo.discard("")
+    urls_excluidas_anexo.discard("#")
+    urls_en_anexo = set()
+
+    def _repetida_en_anexo(url_fila: str) -> bool:
+        u = (url_fila or "").strip()
+        if not u:
+            return False
+        if u in urls_excluidas_anexo or u in urls_en_anexo:
+            return True
+        urls_en_anexo.add(u)
+        return False
+
     for nr in nombres_rows:
         if filas_anexo_figuras >= 4:
             break
         n_nombre = nr["nombre"]
         n_ctx = limpiar_contexto_nombre(nr.get("contexto", ""), 100)
         if es_texto_basura_ui(n_nombre, n_ctx):
+            continue
+        if _repetida_en_anexo(nr.get("fuente_url")):
             continue
 
         n_tipo = nr.get("tipo", "Figura / Persona")
@@ -1171,6 +1197,8 @@ def generar_html_reporte(
         p_ej = limpiar_contexto_nombre(pr.get("ejemplo_texto", ""), 95)
         if es_texto_basura_ui(p_palabra, p_ej):
             continue
+        if _repetida_en_anexo(pr.get("fuente_url")):
+            continue
 
         p_cat = pr.get("categoria_sugerida", "general")
         p_partido = pr.get("partido_origen", "PBA")
@@ -1191,7 +1219,6 @@ def generar_html_reporte(
           <td style="text-align: center;">{link_col}</td>
         </tr>
         """
-        filas_anexo_figuras += 1
         filas_anexo_figuras += 1
 
     if filas_anexo_figuras == 0:

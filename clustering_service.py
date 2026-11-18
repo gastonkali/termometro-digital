@@ -208,8 +208,16 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
                     grupo_indices.append(j)
 
         items_cluster = [hallazgos[idx] for idx in grupo_indices]
-        # Representante: la publicación con más conversación (su link es el que se muestra)
-        items_cluster.sort(key=lambda x: (x.get("es_convocatoria", 0), _entero(x.get("num_comentarios")), x.get("relevancia", 0), len(x.get("texto", ""))), reverse=True)
+        # Representante: la publicación con más conversación (su link es el que se muestra).
+        # A igual conversación se prefiere un link directo al medio antes que uno de
+        # Google Noticias, que a veces no abre.
+        items_cluster.sort(key=lambda x: (
+            x.get("es_convocatoria", 0),
+            _entero(x.get("num_comentarios")),
+            0 if "news.google.com/" in (x.get("url") or "") else 1,
+            x.get("relevancia", 0),
+            len(x.get("texto", "")),
+        ), reverse=True)
         rep = items_cluster[0]
 
         # Fuentes distintas = autores/medios distintos. (Antes había nombres fijos por
