@@ -1951,6 +1951,38 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
                 print("Error enviando por Telegram:", e_tg)
 
 
+def conectar_cuenta_x():
+    """
+    Abre una ventana visible de navegador directo en X (Twitter)
+    para conectar o cambiar a tu otra cuenta de X.
+    Tus sesiones quedan guardadas permanentemente en user_session_browser.
+    """
+    print("\n=======================================================")
+    print("🐦 CONECTAR CUENTA DE X (TWITTER) — Termómetro Digital")
+    print("Se abrirá la ventana del navegador en tu pantalla.")
+    print("Podés:")
+    print(" 1. Si querés mantener ambas cuentas: hacé clic abajo a la izquierda")
+    print("    en tu perfil y elegí 'Agregar una cuenta existente'.")
+    print(" 2. O cerrá la sesión actual e iniciá con la nueva cuenta.")
+    print("Cuando termines de iniciar sesión, simplemente cerrá la ventana.")
+    print("=======================================================\n")
+
+    p, context = lanzar_navegador_sesion(headless=False)
+    page = context.new_page()
+    page.goto("https://x.com/home")
+
+    print("Esperando a que cierres la ventana del navegador...")
+    try:
+        while len(context.pages) > 0:
+            time.sleep(1)
+    except Exception:
+        pass
+    finally:
+        context.close()
+        p.stop()
+        print("\n✓ Sesión de X guardada correctamente en user_session_browser.")
+
+
 def modo_login():
     """
     Abre el navegador en modo visible para que inicies sesión
@@ -2007,6 +2039,7 @@ def probar_x(consulta: str, headless: bool = False) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Scraper con sesión abierta para Termómetro Digital")
     parser.add_argument("--login", action="store_true", help="Abrir navegador para iniciar sesión una única vez")
+    parser.add_argument("--login-x", action="store_true", help="Abrir ventana visible de X para conectar o cambiar cuenta de Twitter")
     parser.add_argument("--headless", action="store_true", help="Correr en segundo plano sin ventana visible")
     parser.add_argument("--max-consultas", type=int, default=5, help="Cantidad de consultas a ejecutar")
     parser.add_argument("--probar-ig", metavar="CUENTA", help="Probar la lectura de una cuenta de Instagram sin guardar nada (ej: hechosyderecho)")
@@ -2027,6 +2060,8 @@ if __name__ == "__main__":
             p_ig.stop()
     elif args.probar_x:
         probar_x(args.probar_x, headless=args.headless)
+    elif args.login_x:
+        conectar_cuenta_x()
     elif args.login:
         modo_login()
     else:
