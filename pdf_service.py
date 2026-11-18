@@ -378,7 +378,7 @@ def generar_html_reporte(
         p_val = (r.get("pasada") or "").lower()
         f_val = (r.get("fuente") or "").lower()
         if (
-            p_val in ("grupos_vecinales", "feed_amigos", "referentes_policiales", "instagram_amigos", "instagram_cuentas")
+            p_val in ("grupos_vecinales", "feed_amigos", "referentes_policiales", "instagram_amigos", "instagram_cuentas", "x_seguidos")
             or "grupo:" in f_val
             or "amigos" in f_val
             or "contactos" in f_val
@@ -429,9 +429,15 @@ def generar_html_reporte(
     )
 
     filas_red_propia = ""
-    for item in items_red_propia[:3]:
+    for item in items_red_propia[:int(os.getenv("TERMOMETRO_FILAS_RED_PROPIA", "6"))]:
         f_nom = item.get("fuente", "Facebook")
-        comunidad_lbl = f_nom.replace("Facebook (", "").replace(")", "").replace("Grupo: ", "")
+        # "Facebook (Grupo: X)" → "X"; "X / Twitter (Cuentas que sigo)" → "X · Cuentas que sigo"
+        m_lbl = re.match(r"^(Facebook|Instagram|X / Twitter)\s*\((.*)\)$", f_nom)
+        if m_lbl:
+            red = {"Facebook": "", "Instagram": "Instagram · ", "X / Twitter": "X · "}[m_lbl.group(1)]
+            comunidad_lbl = red + m_lbl.group(2).replace("Grupo: ", "")
+        else:
+            comunidad_lbl = f_nom
         if "Permutas" in comunidad_lbl:
             comunidad_lbl = "Permutas Policía PBA"
         elif "RUMORES POLICIALES" in comunidad_lbl:
@@ -440,7 +446,7 @@ def generar_html_reporte(
             comunidad_lbl = "Policiales Bahía Blanca"
         elif "Virginia" in comunidad_lbl:
             comunidad_lbl = "Virginia Luján Sosa"
-        elif "Amigos" in comunidad_lbl or "Contactos" in comunidad_lbl:
+        elif comunidad_lbl.startswith(("Amigos", "Contactos")):
             comunidad_lbl = "Feed Amigos / Contactos"
 
         autor = html_lib.escape(item.get("autor") or "Miembro")

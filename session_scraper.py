@@ -794,118 +794,250 @@ def extraer_posteos_twitter(page, url_busqueda: str, max_items: int = 8, verbose
             page.mouse.wheel(0, 1200)
             time.sleep(1.5)
 
-        articulos = page.locator('article[data-testid="tweet"]').all()
-        for art in articulos:
-            try:
-                # Expandir si está cortado con "Mostrar más"
-                show_more = art.locator('[data-testid="tweet-text-show-more-link"]').first
-                if show_more.count():
-                    try:
-                        show_more.click()
-                        time.sleep(0.3)
-                    except Exception:
-                        pass
-
-                # Extraer texto del tweet
-                text_el = art.locator('[data-testid="tweetText"]').first
-                if not text_el.count():
-                    _descartar("sin texto (solo imagen/video)")
-                    continue
-                texto = text_el.inner_text().strip()
-                if len(texto) < 25:
-                    _descartar("texto muy corto", texto)
-                    continue
-
-                # Filtrar idioma estrictamente español
-                if not es_texto_espanol(texto):
-                    _descartar("no está en español", texto)
-                    continue
-
-                excluir, motivo = es_tema_excluido("", texto)
-                if excluir:
-                    _descartar(motivo, texto)
-                    continue
-
-                # Filtrar exclusión geográfica de PBA
-                if es_exclusion_geografica(texto, partido_objetivo):
-                    _descartar("sin lugar de PBA en el texto / otra provincia", texto)
-                    continue
-
-                # Extraer autor real
-                author_el = art.locator('[data-testid="User-Name"]').first
-                autor = author_el.inner_text().split("\n")[0].strip() if author_el.count() else "Usuario X"
-
-                # Enlace directo al tweet: el <a> que contiene la hora es el del tweet
-                # principal (no el de un tweet citado ni el de /photo/ o /analytics).
-                href = None
-                time_link = art.locator('a[href*="/status/"]:has(time)').first
-                if time_link.count():
-                    href = time_link.get_attribute("href")
-                if not href:
-                    links = art.locator('a[href*="/status/"]').all()
-                    href = links[0].get_attribute("href") if links else None
-                if not href:
-                    _descartar("sin enlace al tweet", texto)
-                    continue
-                m_status = re.search(r"^(.*?/status/\d+)", href)
-                if m_status:
-                    href = m_status.group(1)
-                enlace = f"https://x.com{href}" if not href.startswith("http") else href
-                if not es_url_publicacion_valida(enlace):
-                    continue
-
-                fecha_iso = ""
-                time_el = art.locator("time").first
-                dt_attr = time_el.get_attribute("datetime") if time_el.count() else None
-                if dt_attr:
-                    try:
-                        fecha_iso = datetime.fromisoformat(dt_attr.replace("Z", "+00:00")).astimezone().replace(tzinfo=None).isoformat(timespec="seconds")
-                    except ValueError:
-                        fecha_iso = ""
-                if not fecha_iso:
-                    fecha_iso, _ = _resolver_fecha("", enlace)
-                if fecha_iso:
-                    from config_pba import MAX_HORAS_ANTIGUEDAD
-                    if (datetime.now() - datetime.fromisoformat(fecha_iso)).total_seconds() > MAX_HORAS_ANTIGUEDAD * 3600:
-                        _descartar(f"más viejo que {MAX_HORAS_ANTIGUEDAD} h", texto)
-                        continue
-
-                metricas = _metricas_tweet(art)
-
-                img_el = art.locator('div[data-testid="tweetPhoto"] img').first
-                img_url = img_el.get_attribute("src") if img_el.count() else ""
-
-                comentarios_tw = []
-
-                texto_con_comentarios = texto
-                if comentarios_tw:
-                    texto_con_comentarios += "\n\n💬 Comentarios destacados de vecinos:\n" + "\n".join(f"• {c}" for c in comentarios_tw)
-
-                primer_renglon = texto.split("\n")[0][:75].strip()
-                tweets.append({
-                    "fuente": "X / Twitter (Sesión Abierta)",
-                    "autor": autor,
-                    "url": enlace,
-                    "titulo": f"{autor}: {primer_renglon}",
-                    "texto": texto_con_comentarios,
-                    "comentarios": comentarios_tw,
-                    "imagen_url": img_url,
-                    "fecha_publicacion": fecha_iso,
-                    "metricas": metricas
-                })
-                if verbose:
-                    print(f"    ✓ {autor}: {texto[:90]!r}")
-                if len(tweets) >= max_items:
-                    break
-            except Exception as e_art:
-                _descartar(f"error leyendo tweet ({type(e_art).__name__})")
-                continue
-        detalle = ", ".join(f"{k}: {v}" for k, v in descartes.items()) or "ninguno"
-        print(f"  [X] {len(articulos)} tweets vistos → {len(tweets)} aceptados. Descartados: {detalle}")
+        tweets = _parsear_tweets_en_pagina(page, max_items, _descartar, verbose, partido_objetivo)
     except Exception as e:
         print(f"[X Session] Error navegando: {e}")
-
+    detalle = ", ".join(f"{k}: {v}" for k, v in descartes.items()) or "ninguno"
+    print(f"  [X] {len(tweets)} tweets aceptados. Descartados: {detalle}")
     return tweets
+
+
+def _parsear_tweets_en_pagina(page, max_items: int, _descartar, verbose: bool = False,
+                              partido_objetivo: str = "",
+                              fuente: str = "X / Twitter (Sesión Abierta)") -> List[Dict[str, Any]]:
+    """Lee los tweets visibles en la página (búsqueda o timeline) y aplica los filtros."""
+    from config_pba import es_exclusion_geografica, es_tema_excluido, es_texto_espanol
+
+    tweets: List[Dict[str, Any]] = []
+    articulos = page.locator('article[data-testid="tweet"]').all()
+    for art in articulos:
+        try:
+            # Expandir si está cortado con "Mostrar más"
+            show_more = art.locator('[data-testid="tweet-text-show-more-link"]').first
+            if show_more.count():
+                try:
+                    show_more.click()
+                    time.sleep(0.3)
+                except Exception:
+                    pass
+
+            # Extraer texto del tweet
+            text_el = art.locator('[data-testid="tweetText"]').first
+            if not text_el.count():
+                _descartar("sin texto (solo imagen/video)")
+                continue
+            texto = text_el.inner_text().strip()
+            if len(texto) < 25:
+                _descartar("texto muy corto", texto)
+                continue
+
+            # Filtrar idioma estrictamente español
+            if not es_texto_espanol(texto):
+                _descartar("no está en español", texto)
+                continue
+
+            excluir, motivo = es_tema_excluido("", texto)
+            if excluir:
+                _descartar(motivo, texto)
+                continue
+
+            # Filtrar exclusión geográfica de PBA
+            if es_exclusion_geografica(texto, partido_objetivo):
+                _descartar("sin lugar de PBA en el texto / otra provincia", texto)
+                continue
+
+            # Extraer autor real
+            author_el = art.locator('[data-testid="User-Name"]').first
+            autor = author_el.inner_text().split("\n")[0].strip() if author_el.count() else "Usuario X"
+
+            # Enlace directo al tweet: el <a> que contiene la hora es el del tweet
+            # principal (no el de un tweet citado ni el de /photo/ o /analytics).
+            href = None
+            time_link = art.locator('a[href*="/status/"]:has(time)').first
+            if time_link.count():
+                href = time_link.get_attribute("href")
+            if not href:
+                links = art.locator('a[href*="/status/"]').all()
+                href = links[0].get_attribute("href") if links else None
+            if not href:
+                _descartar("sin enlace al tweet", texto)
+                continue
+            m_status = re.search(r"^(.*?/status/\d+)", href)
+            if m_status:
+                href = m_status.group(1)
+            enlace = f"https://x.com{href}" if not href.startswith("http") else href
+            if not es_url_publicacion_valida(enlace):
+                continue
+
+            fecha_iso = ""
+            time_el = art.locator("time").first
+            dt_attr = time_el.get_attribute("datetime") if time_el.count() else None
+            if dt_attr:
+                try:
+                    fecha_iso = datetime.fromisoformat(dt_attr.replace("Z", "+00:00")).astimezone().replace(tzinfo=None).isoformat(timespec="seconds")
+                except ValueError:
+                    fecha_iso = ""
+            if not fecha_iso:
+                fecha_iso, _ = _resolver_fecha("", enlace)
+            if fecha_iso:
+                from config_pba import MAX_HORAS_ANTIGUEDAD
+                if (datetime.now() - datetime.fromisoformat(fecha_iso)).total_seconds() > MAX_HORAS_ANTIGUEDAD * 3600:
+                    _descartar(f"más viejo que {MAX_HORAS_ANTIGUEDAD} h", texto)
+                    continue
+
+            metricas = _metricas_tweet(art)
+
+            img_el = art.locator('div[data-testid="tweetPhoto"] img').first
+            img_url = img_el.get_attribute("src") if img_el.count() else ""
+
+            comentarios_tw = []
+
+            texto_con_comentarios = texto
+            if comentarios_tw:
+                texto_con_comentarios += "\n\n💬 Comentarios destacados de vecinos:\n" + "\n".join(f"• {c}" for c in comentarios_tw)
+
+            primer_renglon = texto.split("\n")[0][:75].strip()
+            tweets.append({
+                "fuente": fuente,
+                "autor": autor,
+                "url": enlace,
+                "titulo": f"{autor}: {primer_renglon}",
+                "texto": texto_con_comentarios,
+                "comentarios": comentarios_tw,
+                "imagen_url": img_url,
+                "fecha_publicacion": fecha_iso,
+                "metricas": metricas
+            })
+            if verbose:
+                print(f"    ✓ {autor}: {texto[:90]!r}")
+            if len(tweets) >= max_items:
+                break
+        except Exception as e_art:
+            _descartar(f"error leyendo tweet ({type(e_art).__name__})")
+            continue
+    return tweets
+
+
+def extraer_posteos_x_seguidos(page, max_items: int = 8, verbose: bool = False) -> List[Dict[str, Any]]:
+    """Lee la pestaña "Siguiendo" del inicio de X: los tweets de las cuentas que seguís, en
+    orden cronológico (la pestaña "Para vos" la ordena X a su criterio y mezcla desconocidos)."""
+    descartes: Dict[str, int] = {}
+    ya_descartados = set()
+
+    def _descartar(motivo: str, texto: str = "") -> None:
+        # El timeline se relee tras cada scroll: contar cada tweet una sola vez
+        if texto and texto in ya_descartados:
+            return
+        ya_descartados.add(texto)
+        descartes[motivo] = descartes.get(motivo, 0) + 1
+        if verbose:
+            print(f"    ✗ {motivo}: {texto[:90]!r}")
+
+    tweets: List[Dict[str, Any]] = []
+    try:
+        print("  🐦 Revisando la pestaña Siguiendo de X...")
+        page.goto("https://x.com/home", timeout=35000, wait_until="domcontentloaded")
+        try:
+            page.wait_for_selector('[role="tab"]', timeout=15000)
+        except Exception:
+            print(f"  ⚠️ [X Siguiendo] {diagnosticar_pagina_x(page)}")
+            return []
+        tab = page.get_by_role("tab", name=re.compile(r"^(Siguiendo|Following)$", re.I)).first
+        if tab.count():
+            if tab.get_attribute("aria-selected") != "true":
+                tab.click()
+                time.sleep(2.5)
+        else:
+            print("  ⚠️ [X Siguiendo] no se encontró la pestaña 'Siguiendo'; se lee el inicio tal como está.")
+        try:
+            page.wait_for_selector('article[data-testid="tweet"]', timeout=15000)
+        except Exception:
+            print(f"  ⚠️ [X Siguiendo] 0 tweets — {diagnosticar_pagina_x(page)}")
+            return []
+
+        # El timeline va reciclando los tweets al bajar: leer después de cada scroll
+        vistos = set()
+        for _ in range(int(os.getenv("TERMOMETRO_X_SCROLLS", "4")) + 1):
+            for t in _parsear_tweets_en_pagina(page, max_items * 3, _descartar, verbose,
+                                               fuente="X / Twitter (Cuentas que sigo)"):
+                if t["url"] not in vistos:
+                    vistos.add(t["url"])
+                    t["pasada"] = "x_seguidos"
+                    t["categoria"] = ""
+                    tweets.append(t)
+            if len(tweets) >= max_items:
+                break
+            page.mouse.wheel(0, 1500)
+            time.sleep(1.5)
+    except Exception as e:
+        print(f"  [Aviso X Siguiendo]: {e}")
+
+    detalle = ", ".join(f"{k}: {v}" for k, v in descartes.items()) or "ninguno"
+    print(f"  [X Siguiendo] {len(tweets[:max_items])} tweets aceptados. Descartados: {detalle}")
+    return tweets[:max_items]
+
+
+_RUTAS_GRUPOS_NO_GRUPO = {"feed", "joins", "discover", "create", "notifications", "search", "your_groups", "categories", "membership"}
+
+
+def _clave_grupo(url: str) -> str:
+    m = re.search(r"facebook\.com/groups/([^/?#]+)", url or "")
+    return m.group(1).lower() if m else (url or "").lower()
+
+
+def descubrir_grupos_facebook(page, horas_cache: int = 24) -> List[Dict[str, Any]]:
+    """Lista los grupos de Facebook de los que sos miembro (facebook.com/groups/joins/).
+    Se guarda en scraper_state.json y se vuelve a leer como mucho una vez por día."""
+    state_file = os.path.join(BASE_DIR, "scraper_state.json")
+    sdata: Dict[str, Any] = {}
+    try:
+        if os.path.exists(state_file):
+            with open(state_file, "r", encoding="utf-8") as sf:
+                sdata = json.load(sf)
+        cache = sdata.get("grupos_descubiertos") or {}
+        if cache.get("grupos") and cache.get("fecha"):
+            if (datetime.now() - datetime.fromisoformat(cache["fecha"])).total_seconds() < horas_cache * 3600:
+                return cache["grupos"]
+    except Exception:
+        sdata = {}
+
+    grupos: List[Dict[str, Any]] = []
+    try:
+        print("  👥 Actualizando la lista de grupos de los que sos miembro...")
+        page.goto("https://www.facebook.com/groups/joins/?nav_source=tab", timeout=30000, wait_until="domcontentloaded")
+        time.sleep(3.5)
+        for _ in range(int(os.getenv("TERMOMETRO_SCROLLS_LISTA_GRUPOS", "6"))):
+            page.mouse.wheel(0, 2000)
+            time.sleep(1.2)
+        crudos = page.evaluate(r"""() => {
+            const out = [];
+            for (const a of document.querySelectorAll('div[role="main"] a[href*="/groups/"]')) {
+                const nombre = (a.innerText || a.getAttribute('aria-label') || '').split('\n')[0].trim();
+                if (nombre.length >= 3) out.push({ nombre, url: a.href.split('?')[0] });
+            }
+            return out;
+        }""")
+        vistos = set()
+        for g in crudos:
+            clave = _clave_grupo(g["url"])
+            if not clave or clave in _RUTAS_GRUPOS_NO_GRUPO or clave in vistos:
+                continue
+            if g["nombre"].lower() in ("ver grupo", "view group", "ver todo", "see all"):
+                continue
+            vistos.add(clave)
+            grupos.append({"nombre": g["nombre"][:60], "url": f"https://www.facebook.com/groups/{clave}/", "categoria": "seguridad"})
+        print(f"  👥 Grupos encontrados en tu cuenta: {len(grupos)}")
+    except Exception as e:
+        print(f"  [Aviso lista de grupos]: {e}")
+
+    if grupos:
+        try:
+            sdata["grupos_descubiertos"] = {"fecha": datetime.now().isoformat(timespec="seconds"), "grupos": grupos}
+            with open(state_file, "w", encoding="utf-8") as sf:
+                json.dump(sdata, sf, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+    return grupos
 
 
 def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_grupo: int = 2, max_items: int = 8) -> List[Dict[str, Any]]:
@@ -934,8 +1066,13 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
         {"nombre": "Del Viso / Alberti Conectados", "url": "https://www.facebook.com/groups/708319824599208/", "categoria": "seguridad"},
         {"nombre": "Grand Bourg Conectado", "url": "https://www.facebook.com/groups/260758975428433/", "categoria": "seguridad"},
         {"nombre": "Budge Conectado", "url": "https://www.facebook.com/groups/budgeconectado/", "categoria": "seguridad"},
-        {"nombre": "Feed General de Grupos", "url": "https://www.facebook.com/groups/feed/", "categoria": "seguridad"},
     ]
+    # Sumar todos los grupos de los que sos miembro (lista actualizada una vez por día)
+    ya = {_clave_grupo(g["url"]) for g in GRUPOS_USUARIO}
+    for g in descubrir_grupos_facebook(page):
+        if _clave_grupo(g["url"]) not in ya:
+            ya.add(_clave_grupo(g["url"]))
+            GRUPOS_USUARIO.append(g)
 
     state_file = os.path.join(BASE_DIR, "scraper_state.json")
     idx_g = 0
@@ -947,7 +1084,11 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
         except Exception:
             idx_g = 0
 
-    grupos_a_visitar = [GRUPOS_USUARIO[(idx_g + i) % len(GRUPOS_USUARIO)] for i in range(max_grupos)]
+    # El feed general de grupos (lo último de TODOS tus grupos) se mira en cada corrida;
+    # además se rota por los grupos de a max_grupos.
+    max_grupos = min(max_grupos, len(GRUPOS_USUARIO))
+    grupos_a_visitar = [{"nombre": "Feed General de Grupos", "url": "https://www.facebook.com/groups/feed/", "categoria": "seguridad"}]
+    grupos_a_visitar += [GRUPOS_USUARIO[(idx_g + i) % len(GRUPOS_USUARIO)] for i in range(max_grupos)]
     try:
         sdata = {}
         if os.path.exists(state_file):
@@ -955,7 +1096,7 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
                 sdata = json.load(sf)
         sdata["proximo_grupo_idx"] = (idx_g + max_grupos) % len(GRUPOS_USUARIO)
         with open(state_file, "w", encoding="utf-8") as sf:
-            json.dump(sdata, sf, indent=2)
+            json.dump(sdata, sf, indent=2, ensure_ascii=False)
     except Exception:
         pass
 
@@ -1098,7 +1239,9 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
                     "metricas": it.get("metricas") or {}
                 })
                 items_grupo += 1
-                if items_grupo >= max_items_por_grupo:
+                # El feed general junta todos los grupos: se le permiten más publicaciones
+                tope = max_items_por_grupo * 3 if "/groups/feed" in g_url else max_items_por_grupo
+                if items_grupo >= tope:
                     break
 
         except Exception as e:
@@ -1268,20 +1411,39 @@ def extraer_posteos_referentes_policiales(page, max_items: int = 5) -> List[Dict
 
     return posteos
 
+FEEDS_FACEBOOK_SEGUIDOS = [
+    # (url, etiqueta de la fuente)
+    ("https://www.facebook.com/?filter=friends&sk=h_chr", "Facebook (Amigos / Contactos)"),   # solo amigos, más recientes
+    ("https://www.facebook.com/?sk=h_chr", "Facebook (Páginas y perfiles que sigo)"),         # todo lo que seguís, más recientes
+]
+
+
 def extraer_posteos_facebook_amigos(page, max_items: int = 5) -> List[Dict[str, Any]]:
-    """
-    Navega al feed de inicio (publicaciones de amigos y seguidos del usuario)
-    y extrae posteos locales de PBA.
-    """
+    """Publicaciones de amigos, páginas y perfiles que seguís en Facebook, en orden
+    cronológico ("Más recientes"). Antes se leía el inicio, que Facebook ordena a su
+    criterio y mezcla con sugerencias y publicidad."""
+    posteos: List[Dict[str, Any]] = []
+    vistas = set()
+    for url_feed, etiqueta in FEEDS_FACEBOOK_SEGUIDOS:
+        if len(posteos) >= max_items:
+            break
+        for p_item in _extraer_feed_facebook(page, url_feed, etiqueta, max_items - len(posteos)):
+            if p_item["url"] not in vistas:
+                vistas.add(p_item["url"])
+                posteos.append(p_item)
+    return posteos
+
+
+def _extraer_feed_facebook(page, url_feed: str, etiqueta_fuente: str, max_items: int = 5) -> List[Dict[str, Any]]:
     from config_pba import es_exclusion_geografica, es_texto_espanol
     from engine import detectar_partido_en_texto
 
     posteos = []
     try:
-        print("  👤 Explorando feed de inicio y publicaciones de amigos en Facebook...")
-        page.goto("https://www.facebook.com/", timeout=30000, wait_until="domcontentloaded")
+        print(f"  👤 Explorando {etiqueta_fuente}...")
+        page.goto(url_feed, timeout=30000, wait_until="domcontentloaded")
         time.sleep(3.5)
-        for _ in range(3):
+        for _ in range(int(os.getenv("TERMOMETRO_SCROLLS_FEED_FB", "5"))):
             page.mouse.wheel(0, 1500)
             time.sleep(1.2)
 
@@ -1368,7 +1530,7 @@ def extraer_posteos_facebook_amigos(page, max_items: int = 5) -> List[Dict[str, 
 
             primer_renglon = txt.split("\n")[0][:75].strip()
             posteos.append({
-                "fuente": "Facebook (Amigos / Contactos)",
+                "fuente": etiqueta_fuente,
                 "autor": autor,
                 "url": url_fin,
                 "titulo": f"{autor}: {primer_renglon}",
@@ -1385,7 +1547,7 @@ def extraer_posteos_facebook_amigos(page, max_items: int = 5) -> List[Dict[str, 
                 break
 
     except Exception as e:
-        print(f"  [Aviso Feed Amigos FB]: {e}")
+        print(f"  [Aviso {etiqueta_fuente}]: {e}")
 
     return posteos
 
@@ -1401,7 +1563,9 @@ def extraer_posteos_instagram(page, max_items: int = 6) -> List[Dict[str, Any]]:
 
     posteos = []
     urls_ig = [
-        ("https://www.instagram.com/", "feed_amigos"),
+        # "Siguiendo": solo cuentas que seguís, en orden cronológico (el inicio común
+        # lo ordena Instagram y mezcla sugerencias)
+        ("https://www.instagram.com/?variant=following", "feed_amigos"),
         ("https://www.instagram.com/explore/tags/policiabonaerense/", "hashtag_seguridad"),
         ("https://www.instagram.com/explore/tags/inseguridadbuenosaires/", "hashtag_seguridad"),
         ("https://www.instagram.com/explore/tags/vecinosbuenosaires/", "hashtag_vecinal"),
@@ -1414,12 +1578,13 @@ def extraer_posteos_instagram(page, max_items: int = 6) -> List[Dict[str, Any]]:
             print(f"  📸 Explorando Instagram ({tipo_origen}): {ig_url}...")
             page.goto(ig_url, timeout=30000, wait_until="domcontentloaded")
             time.sleep(3.5)
-            for _ in range(2):
+            scrolls = int(os.getenv("TERMOMETRO_SCROLLS_FEED_IG", "5")) if tipo_origen == "feed_amigos" else 2
+            for _ in range(scrolls):
                 page.mouse.wheel(0, 1000)
                 time.sleep(1)
 
             if tipo_origen == "feed_amigos":
-                items_feed = page.evaluate(r"""() => {
+                items_feed = page.evaluate(r"""(maxPosts) => {
                     const arts = document.querySelectorAll('article');
                     const out = [];
                     for (const a of arts) {
@@ -1456,10 +1621,10 @@ def extraer_posteos_instagram(page, max_items: int = 6) -> List[Dict[str, Any]]:
                         if (text.length > 25) {
                             out.push({ autor: autor || 'Instagram', url: postUrl, imgUrl: imgUrl, texto: text, fechaIso });
                         }
-                        if (out.length >= 3) break;
+                        if (out.length >= maxPosts) break;
                     }
                     return out;
-                }""")
+                }""", int(os.getenv("TERMOMETRO_POSTS_FEED_IG", "12")))
                 for it in items_feed:
                     txt = it.get("texto", "").strip()
                     if not txt or len(txt) < 25 or not es_texto_espanol(txt) or es_exclusion_geografica(txt):
@@ -1795,12 +1960,19 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
     matriz = [matriz_completa[(idx_inicio + i) % len(matriz_completa)] for i in range(max_consultas)]
     proximo_idx = (idx_inicio + max_consultas) % len(matriz_completa)
     try:
+        # Conservar el resto del estado (rotación de grupos y lista de grupos): antes se
+        # pisaba el archivo entero y la rotación de grupos volvía siempre al principio.
+        sdata = {}
+        if os.path.exists(state_file):
+            with open(state_file, "r", encoding="utf-8") as sf:
+                sdata = json.load(sf)
+        sdata.update({
+            "proximo_indice": proximo_idx,
+            "ultima_ejecucion": datetime.now().isoformat(),
+            "consultas_ejecutadas": [m.get("fb_search_query") for m in matriz],
+        })
         with open(state_file, "w", encoding="utf-8") as sf:
-            json.dump({
-                "proximo_indice": proximo_idx,
-                "ultima_ejecucion": datetime.now().isoformat(),
-                "consultas_ejecutadas": [m.get("fb_search_query") for m in matriz]
-            }, sf, indent=2)
+            json.dump(sdata, sf, indent=2, ensure_ascii=False)
     except Exception:
         pass
 
@@ -1840,7 +2012,9 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
 
         # Fase 2: Grupos policiales y vecinales de PBA
         print("\n👥 Explorando grupos policiales y vecinales en Facebook...")
-        fb_grupos = extraer_posteos_facebook_grupos(page, max_grupos=4, max_items_por_grupo=2)
+        fb_grupos = extraer_posteos_facebook_grupos(
+            page, max_grupos=int(os.getenv("TERMOMETRO_GRUPOS_POR_CORRIDA", "6")), max_items_por_grupo=2
+        )
         total_recolectados.extend(fb_grupos)
 
         # Fase 2.5: Referentes Policiales y Virginia Luján Sosa
@@ -1850,12 +2024,17 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
 
         # Fase 3: Feed de amigos y contactos en Facebook
         print("\n👤 Explorando feed de amigos y contactos en Facebook...")
-        fb_amigos = extraer_posteos_facebook_amigos(page, max_items=4)
+        fb_amigos = extraer_posteos_facebook_amigos(page, max_items=int(os.getenv("TERMOMETRO_MAX_FEED_FB", "8")))
         total_recolectados.extend(fb_amigos)
+
+        # Fase 3b: cuentas que seguís en X (pestaña "Siguiendo")
+        if os.getenv("TERMOMETRO_X_SEGUIDOS", "1") != "0":
+            print("\n🐦 Revisando las cuentas que seguís en X...")
+            total_recolectados.extend(extraer_posteos_x_seguidos(page, max_items=int(os.getenv("TERMOMETRO_MAX_X_SEGUIDOS", "8"))))
 
         # Fase 4: Feed de seguidos y hashtags bonaerenses en Instagram
         print("\n📸 Explorando feed de seguidos y hashtags en Instagram...")
-        ig_posts = extraer_posteos_instagram(page, max_items=5)
+        ig_posts = extraer_posteos_instagram(page, max_items=int(os.getenv("TERMOMETRO_MAX_FEED_IG", "8")))
         total_recolectados.extend(ig_posts)
 
         # Fase 4b: cuentas de Instagram configuradas (noticias locales que seguís)
@@ -1920,7 +2099,7 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
                     """
                     SELECT id, fuente, autor, partido, titulo, texto, url, imagen_url FROM hallazgos
                     WHERE edicion_id = ?
-                      AND (pasada IN ('grupos_vecinales', 'feed_amigos', 'referentes_policiales', 'instagram_amigos', 'instagram_cuentas')
+                      AND (pasada IN ('grupos_vecinales', 'feed_amigos', 'referentes_policiales', 'instagram_amigos', 'instagram_cuentas', 'x_seguidos')
                            OR fuente LIKE '%Grupo%' OR fuente LIKE '%Amigos%' OR fuente LIKE '%Virginia%')
                       AND url NOT LIKE '%facebook.com'
                       AND url NOT LIKE '%facebook.com/'
