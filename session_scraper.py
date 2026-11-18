@@ -1960,7 +1960,27 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
     print(f"Modo Headless: {headless}")
 
     p, context = lanzar_navegador_sesion(headless=headless)
-    page = context.pages[0] if context.pages else context.new_page()
+
+    es_cdp = getattr(context, "_es_cdp", False)
+    if es_cdp:
+        page_x = next((pg for pg in context.pages if "x.com" in pg.url or "twitter.com" in pg.url), None)
+        page_fb = next((pg for pg in context.pages if "facebook.com" in pg.url), None)
+        page_ig = next((pg for pg in context.pages if "instagram.com" in pg.url), None)
+        if not page_x:
+            page_x = context.new_page()
+            page_x.goto("https://x.com/home", wait_until="domcontentloaded")
+        if not page_fb:
+            page_fb = context.new_page()
+            page_fb.goto("https://www.facebook.com", wait_until="domcontentloaded")
+        if not page_ig:
+            page_ig = context.new_page()
+            page_ig.goto("https://www.instagram.com/?variant=following", wait_until="domcontentloaded")
+        page = page_fb
+    else:
+        page = context.pages[0] if context.pages else context.new_page()
+        page_x = page
+        page_fb = page
+        page_ig = page
 
     # Rotación dinámica de consultas entre pasadas para cubrir los 135 partidos
     matriz_completa = generar_matriz_consultas_multired()
@@ -2009,7 +2029,7 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
         # Fase 1: Búsquedas públicas en Facebook y X
         for idx, item in enumerate(matriz, 1):
             print(f"\n[{idx}/{len(matriz)}] Buscando en Facebook: {item['fb_search_query']}...")
-            fb_posts = extraer_posteos_facebook(page, item["fb_url"], max_items=3)
+            fb_posts = extraer_posteos_facebook(page_fb, item["fb_url"], max_items=3)
             for p_item in fb_posts:
                 p_item["partido"] = item["partido"]
                 p_item["pasada"] = item["pasada"]
@@ -2018,7 +2038,6 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
 
             if item.get("tw_url"):
                 print(f"[{idx}/{len(matriz)}] Buscando en X: {item['partido']}...")
-                page_x = next((pg for pg in context.pages if "x.com" in pg.url or "twitter.com" in pg.url), page)
                 tw_posts = extraer_posteos_twitter(page_x, item["tw_url"], max_items=2, partido_objetivo=item.get("partido", ""))
                 for t_item in tw_posts:
                     t_item["partido"] = item["partido"]
@@ -2070,8 +2089,13 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
         if getattr(context, "_es_cdp", False):
             try:
                 for pg in context.pages:
-                    if "x.com" in pg.url and "/search" in pg.url:
-                        pg.goto("https://x.com/home", wait_until="domcontentloaded")
+                    if not pg.is_closed():
+                        if "x.com" in pg.url and "/search" in pg.url:
+                            pg.goto("https://x.com/home", wait_until="domcontentloaded")
+                        elif "facebook.com" in pg.url and "/search" in pg.url:
+                            pg.goto("https://www.facebook.com", wait_until="domcontentloaded")
+                        elif "instagram.com" in pg.url and ("/p/" in pg.url or "/reel/" in pg.url):
+                            pg.goto("https://www.instagram.com/?variant=following", wait_until="domcontentloaded")
             except Exception:
                 pass
             b_cdp = getattr(context, "_browser_cdp", None)
