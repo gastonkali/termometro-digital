@@ -2199,6 +2199,47 @@ def conectar_cuenta_x():
         print("\n✓ Sesión de X guardada correctamente en user_session_browser.")
 
 
+def conectar_cuenta_ig():
+    """
+    Abre o enfoca la pestaña de Instagram en el navegador permanente
+    para iniciar sesión o actualizar la cuenta con los nuevos seguidos.
+    """
+    print("\n=======================================================")
+    print("📸 CONECTAR CUENTA DE INSTAGRAM — Termómetro Digital")
+    print("Se abrió la pestaña de Instagram en tu navegador.")
+    print("Iniciá sesión con tu cuenta actualizada.")
+    print("Tus seguidos y sesiones quedan guardados permanentemente.")
+    print("=======================================================\n")
+
+    p = sync_playwright().start()
+    try:
+        browser_cdp = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
+        ctx = browser_cdp.contexts[0]
+        page_ig = next((pg for pg in ctx.pages if "instagram.com" in pg.url), None)
+        if not page_ig:
+            page_ig = ctx.new_page()
+        page_ig.goto("https://www.instagram.com/accounts/login/")
+        page_ig.bring_to_front()
+        print("✓ Pestaña de Instagram activa en el navegador.")
+        print("Iniciá sesión en la ventana y dejala abierta.")
+        browser_cdp.close()
+    except Exception:
+        p_c, context = lanzar_navegador_sesion(headless=False)
+        page = context.new_page()
+        page.goto("https://www.instagram.com/accounts/login/")
+        print("Esperando a que cierres la ventana...")
+        try:
+            while len(context.pages) > 0:
+                time.sleep(1)
+        except Exception:
+            pass
+        finally:
+            context.close()
+            p_c.stop()
+    finally:
+        p.stop()
+
+
 def modo_login():
     """
     Abre el navegador en modo visible para que inicies sesión
@@ -2256,6 +2297,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Scraper con sesión abierta para Termómetro Digital")
     parser.add_argument("--login", action="store_true", help="Abrir navegador para iniciar sesión una única vez")
     parser.add_argument("--login-x", action="store_true", help="Abrir ventana visible de X para conectar o cambiar cuenta de Twitter")
+    parser.add_argument("--login-ig", action="store_true", help="Abrir o enfocar pestaña de Instagram para conectar o actualizar cuenta")
     parser.add_argument("--headless", action="store_true", help="Correr en segundo plano sin ventana visible")
     parser.add_argument("--max-consultas", type=int, default=5, help="Cantidad de consultas a ejecutar")
     parser.add_argument("--probar-ig", metavar="CUENTA", help="Probar la lectura de una cuenta de Instagram sin guardar nada (ej: hechosyderecho)")
