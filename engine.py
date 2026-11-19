@@ -148,6 +148,8 @@ def detectar_modificadores_agenda(texto: str) -> List[str]:
     return encontrados
 
 
+_LOCALIDADES_NORM = [quitar_tildes(l.lower()) for l in __import__("config_pba").LOCALIDADES_A_PARTIDO]
+
 _PALABRAS_NO_NOMBRE = {
     "crimen", "robo", "video", "asesinato", "homicidio", "detenido", "detenidos", "urgente",
     "ultimo momento", "policia", "policiales", "vecinos", "denuncia", "hoy", "ayer", "tragedia",
@@ -172,6 +174,11 @@ def extraer_nombres_propios(texto: str) -> List[Tuple[str, str]]:
                 continue
             # Palabras comunes que el patrón toma como nombre ("Crimen", "Robo", "Video"...)
             if quitar_tildes(candidato.lower()) in _PALABRAS_NO_NOMBRE or tiene_senal_conflicto(candidato):
+                continue
+            # Parte del nombre de un partido o localidad ("Gesell" de Villa Gesell)
+            cand_norm = quitar_tildes(candidato.lower())
+            if any(cand_norm in quitar_tildes(p.lower()).split() or cand_norm == quitar_tildes(p.lower())
+                   for p in PARTIDOS_PBA) or any(cand_norm in loc.split() for loc in _LOCALIDADES_NORM):
                 continue
             if candidato in descartar or candidato.title() in descartar or candidato.lower() in {d.lower() for d in descartar} or candidato.lower() in partidos_set:
                 continue

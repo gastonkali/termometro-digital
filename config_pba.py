@@ -186,6 +186,62 @@ NOMBRES_NO_GEOGRAFICOS: List[str] = [
 ]
 
 
+# Partidos que también son nombres o apellidos de personas: "Luján" (María Luján, la
+# víctima), "Zárate" (Evangelina Zárate), "Mercedes", "Dolores", "Pilar", "Moreno"...
+PARTIDOS_NOMBRE_DE_PERSONA: Set[str] = {
+    "Luján", "Mercedes", "Dolores", "Pilar", "Moreno", "Rojas", "Lobos", "Colón", "Alberti",
+    "Pellegrini", "Rivadavia", "Saavedra", "Ramallo", "Escobar", "Zárate", "Lincoln",
+    "Castelli", "Rauch", "Lezama", "Navarro", "Salto", "Junín", "Bolívar", "Tordillo",
+}
+_PALABRAS_NO_NOMBRE_PILA = {
+    "en", "de", "del", "la", "el", "los", "las", "y", "a", "por", "para", "desde", "hacia",
+    "hasta", "entre", "sobre", "partido", "ciudad", "localidad", "municipio", "zona", "provincia",
+    "intendente", "intendenta", "concejo", "hoy", "ayer", "urgente", "alerta", "barrio", "villa",
+    "basilica", "rio", "ruta", "general", "san", "santa", "estacion", "centro", "noticias",
+}
+_SUFIJOS_LUGAR = {"centro", "norte", "sur", "este", "oeste", "ciudad", "partido", "hoy", "ya", "y", "en"}
+_PREFIJOS_VICTIMA = re.compile(
+    r"(?:justicia\s+(?:por|para)|#justiciapor|crimen\s+de|asesinato\s+de|femicidio\s+de|"
+    r"homicidio\s+de|muerte\s+de|la\s+joven|el\s+joven|la\s+nena|el\s+nene|la\s+victima|"
+    r"la\s+mama\s+de|el\s+papa\s+de|la\s+madre\s+de|el\s+padre\s+de)\s*$"
+)
+
+
+def enmascarar_personas(texto: str) -> str:
+    """Saca del texto los nombres de partido que en realidad son una persona, mirando el
+    texto ORIGINAL (con mayúsculas): "Justicia por Luján", "María Luján", "Luján Gómez",
+    "Evangelina Zarate". Se deja tal cual si el texto está todo en mayúsculas."""
+    if not texto:
+        return texto
+    salida = texto
+    for partido in PARTIDOS_NOMBRE_DE_PERSONA:
+        variantes = {partido, quitar_tildes(partido)}
+        for v in variantes:
+            for m in reversed(list(re.finditer(r"(?<![\wÁÉÍÓÚÑáéíóúñ])" + re.escape(v) + r"(?![\wÁÉÍÓÚÑáéíóúñ])", salida))):
+                antes = salida[:m.start()]
+                despues = salida[m.end():]
+                prev = re.search(r"([A-Za-zÁÉÍÓÚÑáéíóúñ]+)[ \t]+$", antes)
+                prox = re.match(r"[ \t]+([A-Za-zÁÉÍÓÚÑáéíóúñ]+)", despues)
+                es_persona = False
+                # "justicia por Luján", "el crimen de Luján"
+                if _PREFIJOS_VICTIMA.search(quitar_tildes(antes.lower())[-40:]):
+                    es_persona = True
+                # "María Luján": nombre de pila con mayúscula antes, que no sea preposición
+                # ni comienzo de oración
+                elif prev and prev.group(1)[0].isupper() and not prev.group(1).isupper():
+                    p = quitar_tildes(prev.group(1).lower())
+                    inicio_oracion = re.search(r"(^|[.!?:\n]\s*)" + re.escape(prev.group(1)) + r"[ \t]+$", antes)
+                    if p not in _PALABRAS_NO_NOMBRE_PILA and not inicio_oracion:
+                        es_persona = True
+                # "Luján Gómez": apellido con mayúscula después
+                if not es_persona and prox and prox.group(1)[0].isupper() and not prox.group(1).isupper():
+                    if quitar_tildes(prox.group(1).lower()) not in _SUFIJOS_LUGAR and not v.isupper():
+                        es_persona = True
+                if es_persona:
+                    salida = antes + "(persona)" + despues
+    return salida
+
+
 def quitar_nombres_no_geograficos(texto_norm: str) -> str:
     texto_norm = expandir_hashtags_lugar(texto_norm)
     for n in NOMBRES_NO_GEOGRAFICOS:
@@ -195,8 +251,13 @@ def quitar_nombres_no_geograficos(texto_norm: str) -> str:
     global _RE_BARRIO_CON_NOMBRE_DE_PARTIDO
     if _RE_BARRIO_CON_NOMBRE_DE_PARTIDO is None:
         nombres = sorted((quitar_tildes(p.lower()) for p in PARTIDOS_PBA), key=len, reverse=True)
+        alternativas = "|".join(re.escape(n) for n in nombres)
         _RE_BARRIO_CON_NOMBRE_DE_PARTIDO = re.compile(
-            r"\b(?:barrio|bo\.|b°)\s+(?:de\s+)?(?:[a-zñ]+\s+)?(?:" + "|".join(re.escape(n) for n in nombres) + r")(?![\wñ])"
+            # "barrio Ituzaingó", "Parque Saavedra" (CABA), "Plaza Moreno" (La Plata),
+            # "avenida Rivadavia", "calle Moreno"
+            r"\b(?:barrio|bo\.|b°|parque|plaza|calle|avenida|av\.|pasaje)\s+(?:de\s+)?(?:[a-zñ]+\s+)?(?:" + alternativas + r")(?![\wñ])"
+            # "Club Atlético Lanús", "Colegio San Martín", "Hospital Pilar" (sin "de")
+            r"|\b(?:club|colegio|escuela|instituto|hospital|sanatorio)\s+(?:[a-zñ]+\s+)?(?:" + alternativas + r")(?![\wñ])"
         )
     return _RE_BARRIO_CON_NOMBRE_DE_PARTIDO.sub(" ", texto_norm)
 
@@ -551,7 +612,9 @@ PATRONES_RUIDO_NO_CONFLICTIVIDAD: List[str] = [
     "capacitación policial",
     "balance de gestion positivo",
     "balance de gestión",
-    "obras de iluminacion led terminadas"
+    "obras de iluminacion led terminadas",
+    "asamblea anual", "asamblea ordinaria", "asamblea extraordinaria",
+    "convocatoria a asamblea", "convocatorias a asamblea", "asamblea general ordinaria",
 ]
 
 # Stopwords en español
@@ -662,6 +725,7 @@ def es_exclusion_geografica(texto: str, partido_objetivo: str = "") -> bool:
     if not es_texto_espanol(texto):
         return True
 
+    texto = enmascarar_personas(texto)
     t_lower = texto.lower()
 
     # Descartar países y ciudades extranjeras
@@ -722,6 +786,7 @@ def resolver_partido_geografico_preciso(texto: str, partido_sugerido: str = "") 
     3. Mapea localidades específicas (Sarandí, Bernal, Haedo, San Justo, Banfield, etc.) a su Partido real.
     4. Si no hay localidad, busca coincidencia exacta con los 135 partidos.
     """
+    texto = enmascarar_personas(texto)
     t_norm = quitar_nombres_no_geograficos(quitar_tildes(texto.lower()))
 
     # Regla específica: Si es corte en Autopista Bs. As.-La Plata pero en Sarandí o Bernal

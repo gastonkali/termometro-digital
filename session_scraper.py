@@ -1655,8 +1655,6 @@ def extraer_posteos_instagram(page, max_items: int = 6) -> List[Dict[str, Any]]:
                 }""", int(os.getenv("TERMOMETRO_POSTS_FEED_IG", "12")))
                 for it in items_feed:
                     txt = it.get("texto", "").strip()
-                    if not txt or len(txt) < 25 or not es_texto_espanol(txt) or es_exclusion_geografica(txt):
-                        continue
                     post_url = (it.get("url") or "").strip()
                     if not post_url or not es_url_publicacion_valida(post_url):
                         continue
@@ -1664,20 +1662,47 @@ def extraer_posteos_instagram(page, max_items: int = 6) -> List[Dict[str, Any]]:
                     fecha_iso, es_vieja = _fecha_iso_externa(it.get("fechaIso"))
                     if es_vieja:
                         continue
-                    partido_det = detectar_partido_en_texto(f"{autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
-                    primer_renglon = txt.split("\n")[0][:75].strip()
+                    # El texto de la tarjeta del feed trae todo mezclado ("lbinoticias • 9 min
+                    # Tolosa (La Plata) 16 lbinoticias 🚨 ..."). Se abre el post para tomar
+                    # el texto limpio, el autor real, los comentarios y las métricas.
+                    datos_post = None
+                    if os.getenv("TERMOMETRO_ABRIR_POSTS_IG", "1") == "1":
+                        p_tab = None
+                        try:
+                            p_tab = page.context.new_page()
+                            datos_post = leer_post_instagram(p_tab, post_url)
+                        except Exception:
+                            datos_post = None
+                        finally:
+                            if p_tab:
+                                try:
+                                    p_tab.close()
+                                except Exception:
+                                    pass
+                    if datos_post and datos_post.get("caption"):
+                        txt = datos_post["caption"]
+                        autor = datos_post.get("autor") or autor
+                        if not fecha_iso:
+                            fecha_iso, es_vieja = _fecha_iso_externa(datos_post.get("fecha_iso_raw"))
+                            if es_vieja:
+                                continue
+                    if not txt or len(txt) < 25 or not es_texto_espanol(txt) or es_exclusion_geografica(txt):
+                        continue
+                    partido_det = detectar_partido_en_texto(txt, partido_por_defecto="Provincia de Buenos Aires")
+                    primer_renglon = next((l for l in txt.split("\n") if len(l.strip()) > 15), txt)[:75].strip()
                     posteos.append({
                         "fuente": "Instagram (Seguidos / Amigos)",
                         "autor": autor,
                         "url": post_url,
                         "titulo": f"{autor}: {primer_renglon}",
                         "texto": txt,
-                        "comentarios": [],
-                        "imagen_url": it.get("imgUrl", ""),
+                        "comentarios": (datos_post or {}).get("comentarios", [])[:4],
+                        "imagen_url": (datos_post or {}).get("imagen_url") or it.get("imgUrl", ""),
                         "partido": partido_det,
                         "categoria": "seguridad",
                         "pasada": "instagram_amigos",
-                        "fecha_publicacion": fecha_iso
+                        "fecha_publicacion": fecha_iso,
+                        "metricas": (datos_post or {}).get("metricas", {}),
                     })
                     if len(posteos) >= max_items:
                         break

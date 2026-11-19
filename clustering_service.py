@@ -176,7 +176,9 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
             comb_j = f"{hallazgos[j].get('titulo', '')} {hallazgos[j].get('texto', '')}".lower()
             tema_j = detectar_tema_clave_unificado(comb_j)
 
-            if tema_i and tema_j and tema_i == tema_j:
+            # Un tema genérico ("pedido de justicia") solo une publicaciones del mismo partido:
+            # si no, se mezclaban casos distintos de lugares distintos.
+            if tema_i and tema_j and tema_i == tema_j and hallazgos[i].get("partido") == hallazgos[j].get("partido"):
                 visitados[j] = True
                 grupo_indices.append(j)
                 continue
@@ -265,10 +267,10 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
         clima_base = clima_est
         clima_est = escalar_clima(clima_base, repercusion["nivel"])
 
-        titulo_cluster = tema_i or rep.get("titulo", "Reclamo vecinal reportado")
-        if "corte" in titulo_cluster.lower() and "autopista" in titulo_cluster.lower() and "luz" in titulo_cluster.lower():
-            titulo_cluster = "Corte de Autopista Bs. As.–La Plata por falta de luz (Edesur)"
-        else:
+        # Siempre el titular real de la publicación. (Antes se reemplazaba por títulos fijos
+        # como "Pedido de justicia y marcha", que no decían qué había pasado ni dónde.)
+        titulo_cluster = rep.get("titulo") or "Reclamo vecinal reportado"
+        if True:
             if ":" in titulo_cluster and not titulo_cluster.startswith("http"):
                 partes_t = titulo_cluster.split(":", 1)
                 if len(partes_t[0]) < 30 and len(partes_t[1].strip()) > 10:

@@ -229,6 +229,43 @@ def _og_image(url: str, timeout: int = 6) -> str:
     return ""
 
 
+_CACHE_IMAGENES: Dict[str, str] = {}
+
+
+def imagen_embebida(url: str, max_bytes: int = 1_500_000) -> str:
+    """Descarga la imagen y la devuelve como data URI para meterla dentro del PDF.
+    Las fotos de Instagram/Facebook son links firmados que vencen o se bloquean al abrirse
+    fuera de la red (por eso salían rotas, con el texto "Foto"). Devuelve "" si no se pudo:
+    en ese caso el PDF muestra un ícono en lugar de una imagen rota."""
+    if not url:
+        return ""
+    if url.startswith("data:image/"):
+        return url
+    if not url.startswith("http"):
+        return ""
+    if url in _CACHE_IMAGENES:
+        return _CACHE_IMAGENES[url]
+    resultado = ""
+    try:
+        import base64
+        import requests
+        from urllib.parse import urlparse
+        dominio = urlparse(url).netloc
+        referer = ("https://www.instagram.com/" if ("cdninstagram" in dominio or "instagram" in dominio)
+                   else "https://www.facebook.com/" if "fbcdn" in dominio else "")
+        cabeceras = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0 Safari/537.36"}
+        if referer:
+            cabeceras["Referer"] = referer
+        resp = requests.get(url, timeout=8, headers=cabeceras)
+        tipo = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
+        if resp.status_code == 200 and tipo.startswith("image/") and 500 < len(resp.content) <= max_bytes:
+            resultado = f"data:{tipo};base64," + base64.b64encode(resp.content).decode("ascii")
+    except Exception:
+        resultado = ""
+    _CACHE_IMAGENES[url] = resultado
+    return resultado
+
+
 def imagen_de_hecho(cluster: Dict[str, Any], max_descargas: int = 2) -> str:
     """Una imagen para identificar el hecho: la de alguna publicación de redes, o la
     og:image de la nota del medio (se guarda en la base para no volver a pedirla)."""
@@ -564,11 +601,11 @@ def generar_html_reporte(
         txt_raw = item.get("texto") or item.get("titulo") or ""
         txt_limpio = html_lib.escape(recortar_texto_limpio(texto_sin_comentarios(txt_raw), 110))
         
-        img_url = (item.get("imagen_url") or "").strip()
+        img_url = imagen_embebida((item.get("imagen_url") or "").strip())
         url_directa = (item.get("url") or "").strip()
         link_valido = es_url_publicacion_valida(url_directa)
 
-        if img_url and img_url.startswith("http"):
+        if img_url:
             if link_valido:
                 thumb_item = (
                     f'<a href="{url_directa}" target="_blank" style="text-decoration:none; display:inline-block;">'
@@ -1025,7 +1062,7 @@ def generar_html_reporte(
         """
     else:
         for c in seleccionar_hechos_tabla(clusters_vigentes):
-            img_hecho = imagen_de_hecho(c)
+            img_hecho = imagen_embebida(imagen_de_hecho(c))
             if img_hecho:
                 thumb_hecho = (
                     f'<img src="{html_lib.escape(img_hecho)}" alt="" '
@@ -1096,8 +1133,8 @@ def generar_html_reporte(
             else ("pill-clima-moderado" if clima_dest == "MODERADO" else "pill-clima-bueno")
         )
 
-        img_dest = imagen_de_hecho(destacado_item)
-        if img_dest and img_dest.startswith("http"):
+        img_dest = imagen_embebida(imagen_de_hecho(destacado_item))
+        if img_dest:
             thumb_html = f'<img class="destacado-thumb" src="{html_lib.escape(img_dest)}" alt="Foto Hecho" />'
         else:
             thumb_html = (
