@@ -876,6 +876,37 @@ def parsear_fecha_publicacion(texto: str, ahora: Optional[datetime] = None) -> O
     return None
 
 
+_RE_FECHA_EN_TEXTO = re.compile(
+    r"(?<![\w])(hace\s+(?:un|una|\d{1,3})\s*(?:min|mins|minutos?|h|hs|horas?|d|d[ií]as?|sem|semanas?)"
+    r"|justo ahora"
+    r"|ayer(?:\s+a\s+las\s+\d{1,2}[:.]\d{2})?"
+    r"|\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)"
+    r"(?:\s+de\s+\d{4})?(?:\s+a\s+las\s+\d{1,2}[:.]\d{2})?)(?![\w])",
+    re.IGNORECASE,
+)
+
+
+def fecha_en_texto(texto: str, max_chars: int = 250) -> str:
+    """Busca la fecha relativa que Facebook deja escrita al principio del texto de la
+    tarjeta ("InfoBerisso Hace 21 horas EMERGENCIA..."). Devuelve el fragmento o ""."""
+    if not texto:
+        return ""
+    inicio = texto[:max_chars]
+    for m in _RE_FECHA_EN_TEXTO.finditer(inicio):
+        frag = m.group(1)
+        # "un"/"una" → 1
+        frag_num = re.sub(r"(?i)\bhace\s+una?\b", "hace 1", frag)
+        if parsear_fecha_publicacion(frag_num):
+            return frag_num
+    return ""
+
+
+def quitar_fecha_del_texto(texto: str, fragmento: str) -> str:
+    if not fragmento or not texto:
+        return texto
+    return re.sub(re.escape(fragmento), " ", texto, count=1, flags=re.IGNORECASE).replace("  ", " ").strip()
+
+
 def fecha_desde_id_tweet(url: str) -> Optional[datetime]:
     """Las publicaciones de X llevan la fecha codificada en el ID (Snowflake)."""
     m = re.search(r"/status/(\d{15,20})", url or "")

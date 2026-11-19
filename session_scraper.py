@@ -103,6 +103,15 @@ JS_HELPERS_TARJETA = r"""() => {
         }
         let fecha = '';
         for (const a of links) { const f = textoFecha(a); if (f) { fecha = f; break; } }
+        if (!fecha) {
+            // Facebook a veces muestra la fecha como texto suelto ("Hace 21 horas"), no como enlace
+            const clon = card.cloneNode(true);
+            clon.querySelectorAll('[aria-label^="Comentario de"], [aria-label^="Respuesta de"], [aria-label^="Comment by"], [aria-label^="Reply by"]').forEach(e => e.remove());
+            for (const l of (clon.innerText || '').split('\n')) {
+                const t = l.replace(/\s+/g, ' ').replace(/^·\s*|\s*·$/g, '').trim();
+                if (t && t.length < 45 && RE_FECHA.test(t)) { fecha = t; break; }
+            }
+        }
         const prioridades = [
             h => h.includes('/photo/') || h.includes('fbid='),
             h => h.includes('/posts/'),
@@ -159,12 +168,14 @@ def _inyectar_helpers_js(page) -> None:
         pass
 
 
-def _resolver_fecha(fecha_txt: str, url: str = "") -> Tuple[str, bool]:
-    """Devuelve (fecha ISO o "", es_vieja). Una publicación sin fecha legible NO se
-    marca como "en vivo": queda como fecha no verificada."""
-    from config_pba import MAX_HORAS_ANTIGUEDAD, fecha_desde_id_tweet, parsear_fecha_publicacion
+def _resolver_fecha(fecha_txt: str, url: str = "", texto: str = "") -> Tuple[str, bool]:
+    """Devuelve (fecha ISO o "", es_vieja). Si la red no dio la fecha en el enlace, se
+    busca escrita en el texto de la tarjeta ("Hace 21 horas"). Sin fecha legible devuelve ""."""
+    from config_pba import MAX_HORAS_ANTIGUEDAD, fecha_desde_id_tweet, fecha_en_texto, parsear_fecha_publicacion
 
-    dt = parsear_fecha_publicacion(fecha_txt or "") or fecha_desde_id_tweet(url)
+    dt = (parsear_fecha_publicacion(fecha_txt or "")
+          or parsear_fecha_publicacion(fecha_en_texto(texto or ""))
+          or fecha_desde_id_tweet(url))
     if not dt:
         return "", False
     vieja = (datetime.now() - dt).total_seconds() > MAX_HORAS_ANTIGUEDAD * 3600
@@ -708,7 +719,7 @@ def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> Lis
             url_final = limpiar_url_fb(item.get("url"))
             if not url_final or not es_url_publicacion_valida(url_final):
                 continue
-            fecha_iso, es_vieja = _resolver_fecha(item.get("fechaTxt"), url_final)
+            fecha_iso, es_vieja = _resolver_fecha(item.get("fechaTxt"), url_final, txt)
             if es_vieja:
                 continue
 
@@ -1229,7 +1240,7 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
 
                 if not url_fin or not es_url_publicacion_valida(url_fin):
                     continue
-                fecha_iso, es_vieja = _resolver_fecha(it.get("fechaTxt"), url_fin)
+                fecha_iso, es_vieja = _resolver_fecha(it.get("fechaTxt"), url_fin, txt)
                 if es_vieja:
                     continue
                 partido_det = detectar_partido_en_texto(f"{g_nombre} {autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
@@ -1394,7 +1405,7 @@ def extraer_posteos_referentes_policiales(page, max_items: int = 5) -> List[Dict
 
                 if not url_fin or not es_url_publicacion_valida(url_fin):
                     continue
-                fecha_iso, es_vieja = _resolver_fecha(it.get("fechaTxt"), url_fin)
+                fecha_iso, es_vieja = _resolver_fecha(it.get("fechaTxt"), url_fin, txt)
                 if es_vieja:
                     continue
                 partido_det = detectar_partido_en_texto(f"{autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
@@ -1534,7 +1545,7 @@ def _extraer_feed_facebook(page, url_feed: str, etiqueta_fuente: str, max_items:
 
             if not url_fin or not es_url_publicacion_valida(url_fin):
                 continue
-            fecha_iso, es_vieja = _resolver_fecha(it.get("fechaTxt"), url_fin)
+            fecha_iso, es_vieja = _resolver_fecha(it.get("fechaTxt"), url_fin, txt)
             if es_vieja:
                 continue
             partido_det = detectar_partido_en_texto(f"{autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")

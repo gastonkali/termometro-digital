@@ -142,17 +142,125 @@ def obtener_hechos_importantes(
     vigentes, _ = clasificar_descartes_y_vigentes([dict(f) for f in filas])
     clusters = agrupar_con_contexto(vigentes, edicion_id if not horas_atras else None)
     salida = []
-    for c in clusters[:max_hechos]:
+    for c in seleccionar_hechos_tabla(clusters, cantidad=max_hechos, minimo_redes=1):
         salida.append({
             "clima": c["clima_estado"],
             "partido": c["partido"],
             "titulo": c["titulo_cluster"],
             "repercusion": c["repercusion"]["nivel"],
             "motivos": resumen_repercusion(c),
+            "redes": " · ".join(redes_del_hecho(c)),
             "url": c["urls"][0] if c.get("urls") else "",
             "comentario": (c.get("comentarios_cluster") or [""])[0],
+            "imagen": imagen_de_hecho(c, max_descargas=1),
         })
     return salida
+
+
+def es_item_de_redes(item: Dict[str, Any]) -> bool:
+    """True si la publicación viene de Facebook, X o Instagram (no de un medio)."""
+    fuente = (item.get("fuente") or "").lower()
+    return item.get("pasada") != "medios" and not fuente.startswith("medios")
+
+
+def redes_del_hecho(cluster: Dict[str, Any]) -> List[str]:
+    """Etiquetas de las plataformas donde apareció el hecho: Medios, X, Instagram, Facebook."""
+    etiquetas = []
+    for it in cluster.get("hallazgos_relacionados") or []:
+        f = (it.get("fuente") or "").lower()
+        u = (it.get("url") or "").lower()
+        if not es_item_de_redes(it):
+            et = "Medios"
+        elif "x.com" in u or "twitter" in f:
+            et = "X"
+        elif "instagram" in u or "instagram" in f:
+            et = "Instagram"
+        else:
+            et = "Facebook"
+        if et not in etiquetas:
+            etiquetas.append(et)
+    return etiquetas
+
+
+def seleccionar_hechos_tabla(clusters: List[Dict[str, Any]], cantidad: int = 5, minimo_redes: int = 2) -> List[Dict[str, Any]]:
+    """Los hechos más importantes, pero garantizando lugar para lo que circula en redes
+    (X, Instagram, Facebook): si no, las notas replicadas en muchos medios ocupan siempre
+    toda la tabla y los posteos de redes, que suelen tener una sola fuente, nunca aparecen."""
+    elegidos = list(clusters[:cantidad])
+    con_redes = [c for c in elegidos if any(es_item_de_redes(it) for it in c["hallazgos_relacionados"])]
+    faltan = minimo_redes - len(con_redes)
+    if faltan > 0:
+        candidatos = [c for c in clusters[cantidad:] if any(es_item_de_redes(it) for it in c["hallazgos_relacionados"])]
+        for nuevo in candidatos[:faltan]:
+            # Reemplaza al hecho de solo-medios peor ubicado
+            for i in range(len(elegidos) - 1, -1, -1):
+                if elegidos[i] not in con_redes:
+                    elegidos[i] = nuevo
+                    con_redes.append(nuevo)
+                    break
+            else:
+                break
+    orden = {id(c): i for i, c in enumerate(clusters)}
+    return sorted(elegidos, key=lambda c: orden[id(c)])
+
+
+_RE_OG_IMAGE = [
+    re.compile(r'<meta[^>]+property=["\']og:image(?::secure_url)?["\'][^>]*content=["\']([^"\']+)', re.I),
+    re.compile(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]*property=["\']og:image["\']', re.I),
+    re.compile(r'<meta[^>]+name=["\']twitter:image["\'][^>]*content=["\']([^"\']+)', re.I),
+]
+
+
+def _og_image(url: str, timeout: int = 6) -> str:
+    """Imagen principal de una nota (etiqueta og:image del medio)."""
+    try:
+        import requests
+        resp = requests.get(url, timeout=timeout, headers={"User-Agent": "Mozilla/5.0 (TermometroDigital)"})
+        if resp.status_code != 200:
+            return ""
+        cabecera = resp.text[:300000]
+        for rx in _RE_OG_IMAGE:
+            m = rx.search(cabecera)
+            if m and m.group(1).startswith("http"):
+                return html_lib.unescape(m.group(1))
+    except Exception:
+        pass
+    return ""
+
+
+def imagen_de_hecho(cluster: Dict[str, Any], max_descargas: int = 2) -> str:
+    """Una imagen para identificar el hecho: la de alguna publicación de redes, o la
+    og:image de la nota del medio (se guarda en la base para no volver a pedirla)."""
+    items = list(cluster.get("hallazgos_relacionados") or [])
+    rep = cluster.get("representante")
+    if rep in items:
+        items.remove(rep)
+        items.insert(0, rep)
+    for it in items:
+        img = (it.get("imagen_url") or "").strip()
+        if img.startswith("http"):
+            return img
+    intentos = 0
+    for it in items:
+        url = (it.get("url") or "").strip()
+        if not url.startswith("http") or "news.google.com/" in url or es_item_de_redes(it):
+            continue
+        if intentos >= max_descargas:
+            break
+        intentos += 1
+        img = _og_image(url)
+        if img:
+            it["imagen_url"] = img
+            if it.get("id"):
+                try:
+                    conn = get_conn()
+                    conn.execute("UPDATE hallazgos SET imagen_url = ? WHERE id = ?", (img, it["id"]))
+                    conn.commit()
+                    conn.close()
+                except Exception:
+                    pass
+            return img
+    return ""
 
 
 def resumen_repercusion(cluster: Dict[str, Any]) -> str:
@@ -891,9 +999,10 @@ def generar_html_reporte(
     <table class="data-table">
       <thead>
         <tr>
-          <th style="width: 11%;">Clima</th>
-          <th style="width: 14%;">Partido</th>
-          <th style="width: 41%;">Hecho</th>
+          <th style="width: 10%;">Clima</th>
+          <th style="width: 12%;">Partido</th>
+          <th style="width: 9%;">Imagen</th>
+          <th style="width: 35%;">Hecho</th>
           <th style="width: 20%;">Reacción vecinal</th>
           <th style="width: 14%;">Fuente</th>
         </tr>
@@ -907,13 +1016,26 @@ def generar_html_reporte(
         <tr>
           <td><span class="pill-clima pill-clima-bueno">BUENO</span></td>
           <td>Provincia de Buenos Aires</td>
+          <td>—</td>
           <td>Sin hechos vigentes detectados en las publicaciones relevadas.</td>
           <td>—</td>
           <td>—</td>
         </tr>
         """
     else:
-        for c in clusters_vigentes[:5]:
+        for c in seleccionar_hechos_tabla(clusters_vigentes):
+            img_hecho = imagen_de_hecho(c)
+            if img_hecho:
+                thumb_hecho = (
+                    f'<img src="{html_lib.escape(img_hecho)}" alt="" '
+                    f'style="width:58px; height:44px; object-fit:cover; border-radius:4px; border:1px solid #cbd5e1; display:block;" />'
+                )
+            else:
+                thumb_hecho = (
+                    '<div style="width:58px; height:44px; background:#f1f5f9; border:1px solid #e2e8f0; border-radius:4px; '
+                    'display:flex; align-items:center; justify-content:center; font-size:13pt;">📰</div>'
+                )
+            redes_txt = " · ".join(redes_del_hecho(c))
             pill_class = (
                 "pill-clima-alerta" if c["clima_estado"] == "EN ALERTA"
                 else ("pill-clima-moderado" if c["clima_estado"] == "MODERADO" else "pill-clima-bueno")
@@ -934,8 +1056,10 @@ def generar_html_reporte(
         <tr>
           <td><span class="pill-clima {pill_class}">{c['clima_estado']}</span></td>
           <td><strong>{html_lib.escape(c['partido'])}</strong></td>
+          <td style="vertical-align: top;">{thumb_hecho}</td>
           <td>
             {html_lib.escape(c['titulo_cluster'])}
+            <div class="sub-eje">Visto en: {html_lib.escape(redes_txt)}</div>
             <div class="sub-eje">Eje: {eje_str} · {html_lib.escape(fecha_hecho)}</div>
             <div class="sub-eje"><strong>Repercusión {html_lib.escape(c['repercusion']['nivel'])}:</strong> {html_lib.escape(resumen_repercusion(c))}</div>
           </td>
@@ -971,7 +1095,7 @@ def generar_html_reporte(
             else ("pill-clima-moderado" if clima_dest == "MODERADO" else "pill-clima-bueno")
         )
 
-        img_dest = rep.get("imagen_url")
+        img_dest = imagen_de_hecho(destacado_item)
         if img_dest and img_dest.startswith("http"):
             thumb_html = f'<img class="destacado-thumb" src="{html_lib.escape(img_dest)}" alt="Foto Hecho" />'
         else:

@@ -56,6 +56,8 @@ def formatear_mensaje_telegram(datos_edicion: Dict[str, Any]) -> str:
                 f"{recortar_telegram(h.get('titulo', ''), 110)}{link_str}"
             )
             msg.append(f"   ↳ Repercusión {h.get('repercusion', 'BAJA')}: {h.get('motivos', '')}")
+            if h.get("redes"):
+                msg.append(f"   📡 Visto en: {h['redes']}")
             if h.get("comentario"):
                 msg.append(f"   💬 _{recortar_telegram(h['comentario'], 100)}_")
         msg.append("")
@@ -145,6 +147,12 @@ def enviar_alerta_telegram(
 
     # 2. Enviar Foto de la publicación si está disponible
     foto_url = datos_edicion.get("foto_destacada")
+    if not foto_url:
+        # Imagen del hecho más importante (lo que encabeza el mensaje)
+        for h in datos_edicion.get("hechos_importantes") or []:
+            if str(h.get("imagen") or "").startswith("http"):
+                foto_url = h["imagen"]
+                break
     if not foto_url and datos_edicion.get("relevamiento_grupos"):
         for g in datos_edicion["relevamiento_grupos"]:
             if g.get("imagen_url") and str(g["imagen_url"]).startswith("http"):
