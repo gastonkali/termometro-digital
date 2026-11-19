@@ -2119,7 +2119,7 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
             resp = requests.post(API_INGEST_URL, json={
                 "modo": "sesion_abierta_playwright",
                 "posteos": total_recolectados
-            }, timeout=15)
+            }, timeout=60)
             data_resp = resp.json()
             print("Resultado de ingesta en base local (vía API):", data_resp)
             edicion_id = data_resp.get("resultado", {}).get("edicion_id")
