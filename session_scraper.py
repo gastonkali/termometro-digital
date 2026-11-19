@@ -2122,11 +2122,25 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
             p.stop()
 
     print(f"\n✓ Recolección finalizada. Total de publicaciones capturadas: {len(total_recolectados)}")
+    # Cuántas vino de cada red: si alguna da 0 en todas las corridas, ahí está el problema
+    por_red: Dict[str, int] = {}
+    for p_item in total_recolectados:
+        f_red = (p_item.get("fuente") or "").split(" (")[0] or "Otro"
+        por_red[f_red] = por_red.get(f_red, 0) + 1
+    print("  Por red: " + (", ".join(f"{k}: {v}" for k, v in sorted(por_red.items())) or "ninguna"))
+    con_coment = sum(1 for p_item in total_recolectados if p_item.get("comentarios"))
+    print(f"  Publicaciones con comentarios leídos: {con_coment}")
 
     if total_recolectados:
         data_resp = {}
         edicion_id = None
         try:
+            # Por defecto se guarda DIRECTO con el código de este proceso. Antes se mandaba al
+            # panel web (app.py), que es un proceso que queda corriendo días: después de un
+            # git pull seguía clasificando con el código viejo (sin métricas, sin los filtros
+            # nuevos) hasta que alguien lo reiniciara.
+            if os.getenv("TERMOMETRO_INGESTA_API", "0") != "1":
+                raise RuntimeError("ingesta directa (TERMOMETRO_INGESTA_API=0)")
             resp = requests.post(API_INGEST_URL, json={
                 "modo": "sesion_abierta_playwright",
                 "posteos": total_recolectados
@@ -2135,7 +2149,7 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
             print("Resultado de ingesta en base local (vía API):", data_resp)
             edicion_id = data_resp.get("resultado", {}).get("edicion_id")
         except Exception as e:
-            print(f"⚠️ Servidor API local no disponible ({e}). Ingestionando directamente en el motor local...")
+            print(f"  Guardando en la base con el motor local ({e})...")
             try:
                 from engine import ingerir_posteos_directos_facebook
                 res_ing = ingerir_posteos_directos_facebook(total_recolectados, modo="sesion_abierta_playwright")
@@ -2156,21 +2170,21 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
                 from database import get_conn
                 conn = get_conn()
                 convocatorias = conn.execute(
-                    "SELECT titulo, partido, categoria FROM hallazgos WHERE edicion_id = ? AND es_convocatoria = 1",
-                    (edicion_id,),
+                    "SELECT titulo, partido, categoria FROM hallazgos WHERE (edicion_id = ? OR ultima_edicion_id = ?) AND es_convocatoria = 1",
+                    (edicion_id, edicion_id),
                 ).fetchall()
                 nombres = conn.execute(
                     "SELECT nombre FROM nombres_propios WHERE ultima_edicion_id = ? OR vigente = 1 ORDER BY (ultima_edicion_id = ?) DESC, id DESC LIMIT 5",
                     (edicion_id, edicion_id),
                 ).fetchall()
                 hallazgos_dest = conn.execute(
-                    "SELECT partido, autor, texto FROM hallazgos WHERE edicion_id = ? AND descartado = 0 ORDER BY id DESC LIMIT 3",
-                    (edicion_id,),
+                    "SELECT partido, autor, texto FROM hallazgos WHERE (edicion_id = ? OR ultima_edicion_id = ?) AND descartado = 0 ORDER BY id DESC LIMIT 3",
+                    (edicion_id, edicion_id),
                 ).fetchall()
                 grupos_dest = conn.execute(
                     """
                     SELECT id, fuente, autor, partido, titulo, texto, url, imagen_url FROM hallazgos
-                    WHERE edicion_id = ?
+                    WHERE (edicion_id = ? OR ultima_edicion_id = ?)
                       AND (pasada IN ('grupos_vecinales', 'feed_amigos', 'referentes_policiales', 'instagram_amigos', 'instagram_cuentas', 'x_seguidos')
                            OR fuente LIKE '%Grupo%' OR fuente LIKE '%Amigos%' OR fuente LIKE '%Virginia%')
                       AND url NOT LIKE '%facebook.com'
@@ -2178,7 +2192,7 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
                       AND (url LIKE '%/posts/%' OR url LIKE '%/permalink/%' OR url LIKE '%/status/%' OR url LIKE '%/p/%' OR url LIKE '%/reel/%' OR url LIKE '%fbid=%' OR url LIKE '%/share/%' OR url NOT LIKE '%facebook.com%')
                     ORDER BY (imagen_url IS NOT NULL AND imagen_url != '') DESC, id DESC LIMIT 4
                     """,
-                    (edicion_id,),
+                    (edicion_id, edicion_id),
                 ).fetchall()
                 conn.close()
 

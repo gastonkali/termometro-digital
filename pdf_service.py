@@ -116,8 +116,9 @@ def agrupar_con_contexto(vigentes: List[Dict[str, Any]], edicion_id: Optional[in
     corte_iso = (datetime.now() - timedelta(hours=HORAS_VENTANA_REPLICAS)).isoformat(timespec="seconds")
     conn = get_conn()
     filas = conn.execute(
-        "SELECT * FROM hallazgos WHERE fecha_deteccion >= ? AND edicion_id != ? AND descartado = 0",
-        (corte_iso, edicion_id),
+        "SELECT * FROM hallazgos WHERE (fecha_deteccion >= ? OR ultima_deteccion >= ?) "
+        "AND edicion_id != ? AND COALESCE(ultima_edicion_id, 0) != ? AND descartado = 0",
+        (corte_iso, corte_iso, edicion_id, edicion_id),
     ).fetchall()
     conn.close()
     contexto, _ = clasificar_descartes_y_vigentes([dict(f) for f in filas])
@@ -135,9 +136,9 @@ def obtener_hechos_importantes(
     conn = get_conn()
     if horas_atras:
         corte_iso = (datetime.now() - timedelta(hours=horas_atras)).isoformat(timespec="seconds")
-        filas = conn.execute("SELECT * FROM hallazgos WHERE fecha_deteccion >= ?", (corte_iso,)).fetchall()
+        filas = conn.execute("SELECT * FROM hallazgos WHERE fecha_deteccion >= ? OR ultima_deteccion >= ?", (corte_iso, corte_iso)).fetchall()
     else:
-        filas = conn.execute("SELECT * FROM hallazgos WHERE edicion_id = ?", (edicion_id,)).fetchall()
+        filas = conn.execute("SELECT * FROM hallazgos WHERE edicion_id = ? OR ultima_edicion_id = ?", (edicion_id, edicion_id)).fetchall()
     conn.close()
     vigentes, _ = clasificar_descartes_y_vigentes([dict(f) for f in filas])
     clusters = agrupar_con_contexto(vigentes, edicion_id if not horas_atras else None)
@@ -384,8 +385,8 @@ def generar_html_reporte(
     if horas_atras:
         corte_iso = (datetime.now() - timedelta(hours=horas_atras)).isoformat(timespec="seconds")
         hallazgos_rows = conn.execute(
-            "SELECT * FROM hallazgos WHERE fecha_deteccion >= ? ORDER BY es_convocatoria DESC, id DESC",
-            (corte_iso,),
+            "SELECT * FROM hallazgos WHERE fecha_deteccion >= ? OR ultima_deteccion >= ? ORDER BY es_convocatoria DESC, id DESC",
+            (corte_iso, corte_iso),
         ).fetchall()
         edicion_str = f"Consolidado {horas_atras}hs"
         # Solo lo del período (antes se sumaban nombres y palabras de días anteriores)
@@ -399,8 +400,8 @@ def generar_html_reporte(
         ).fetchall()
     else:
         hallazgos_rows = conn.execute(
-            "SELECT * FROM hallazgos WHERE edicion_id = ? ORDER BY es_convocatoria DESC, id DESC",
-            (edicion_id,),
+            "SELECT * FROM hallazgos WHERE edicion_id = ? OR ultima_edicion_id = ? ORDER BY es_convocatoria DESC, id DESC",
+            (edicion_id, edicion_id),
         ).fetchall()
         edicion_str = f"Edición #{edicion_id or 1}"
         # Solo lo visto en esta edición (antes se sumaban nombres y palabras viejos)

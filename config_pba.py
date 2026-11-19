@@ -175,6 +175,7 @@ PARTIDOS_NOMBRE_COMPARTIDO: Set[str] = {
     "General Las Heras", "San Pedro", "Mercedes", "Pila", "Monte", "Salto",
     "General Paz", "Rojas", "Lobos", "Azul", "La Costa", "Puan",
     "Avellaneda", "Pilar", "Moreno", "Escobar",  # Avellaneda (Santa Fe), Pilar (Córdoba)...
+    "Bolívar", "Ituzaingó",  # Bolívar (apellido y barrios en todo el país), Ituzaingó (Corrientes)
 }
 
 # Personas o lugares de otras provincias que contienen el nombre de un partido.
@@ -189,7 +190,18 @@ def quitar_nombres_no_geograficos(texto_norm: str) -> str:
     texto_norm = expandir_hashtags_lugar(texto_norm)
     for n in NOMBRES_NO_GEOGRAFICOS:
         texto_norm = re.sub(r"(?<![\wñ])" + re.escape(n) + r"(?![\wñ])", " ", texto_norm)
-    return texto_norm
+    # "barrio Ituzaingó", "barrio Simón Bolívar": es un barrio con ese nombre (muchas veces
+    # de otra provincia), no el partido.
+    global _RE_BARRIO_CON_NOMBRE_DE_PARTIDO
+    if _RE_BARRIO_CON_NOMBRE_DE_PARTIDO is None:
+        nombres = sorted((quitar_tildes(p.lower()) for p in PARTIDOS_PBA), key=len, reverse=True)
+        _RE_BARRIO_CON_NOMBRE_DE_PARTIDO = re.compile(
+            r"\b(?:barrio|bo\.|b°)\s+(?:de\s+)?(?:[a-zñ]+\s+)?(?:" + "|".join(re.escape(n) for n in nombres) + r")(?![\wñ])"
+        )
+    return _RE_BARRIO_CON_NOMBRE_DE_PARTIDO.sub(" ", texto_norm)
+
+
+_RE_BARRIO_CON_NOMBRE_DE_PARTIDO = None
 
 
 def _lugares_por_hashtag() -> Dict[str, str]:
@@ -235,6 +247,14 @@ PATRONES_CLIMA: List[str] = [
 
 # Deportes y espectáculos: se descartan salvo que hablen de violencia o incidentes
 # (ej. "balacera a la salida del partido" SÍ pasa).
+# Efemérides y homenajes ("A 41 años de la muerte de..."): no son hechos del día, salvo
+# que convoquen a una marcha o reclamo.
+PATRONES_EFEMERIDES: List[str] = [
+    "aniversario", "homenaje", "homenajearon", "conmemoracion", "conmemoro", "recordo su",
+    "recordaron a", "a 10 anos", "a 20 anos", "a 30 anos", "a 40 anos", "a 50 anos",
+]
+PATRON_A_N_ANOS = re.compile(r"\ba \d{1,3} anos de\b")
+
 PATRONES_DEPORTES_ESPECTACULOS: List[str] = [
     "basquet", "basquetbol", "liga nacional", "liga femenina", "torneo", "goleada", "golazo",
     "primera nacional", "primera b", "primera c", "hockey", "voley", "rugby", "fixture",
@@ -799,6 +819,10 @@ def es_tema_excluido(titulo: str, texto: str, autor: str = "") -> Tuple[bool, st
             "cortaron", "piquete", "cacerolazo", "marcha", "asamblea", "autoconvocados",
         )):
             return True, "Meteorología / clima sin reclamo asociado"
+
+    if PATRON_A_N_ANOS.search(cuerpo) or any(contiene_frase(cuerpo, p) for p in PATRONES_EFEMERIDES):
+        if not any(contiene_frase(cuerpo, s) for s in ("marcha", "reclamo", "reclaman", "piden justicia", "convocan", "corte de", "protesta")):
+            return True, "Efeméride / homenaje sin reclamo del día"
 
     if any(contiene_frase(cuerpo, p) for p in PATRONES_DEPORTES_ESPECTACULOS):
         if not any(contiene_frase(cuerpo, s) for s in EXCEPCIONES_VIOLENCIA):

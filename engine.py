@@ -148,6 +148,12 @@ def detectar_modificadores_agenda(texto: str) -> List[str]:
     return encontrados
 
 
+_PALABRAS_NO_NOMBRE = {
+    "crimen", "robo", "video", "asesinato", "homicidio", "detenido", "detenidos", "urgente",
+    "ultimo momento", "policia", "policiales", "vecinos", "denuncia", "hoy", "ayer", "tragedia",
+}
+
+
 def extraer_nombres_propios(texto: str) -> List[Tuple[str, str]]:
     descartar = {
         "Buenos Aires", "Provincia De", "Capital Federal", "Facebook", "Twitter", "Instagram",
@@ -163,6 +169,9 @@ def extraer_nombres_propios(texto: str) -> List[Tuple[str, str]]:
         for match in regex.finditer(texto):
             candidato = match.group(1).strip(" .,;:!¡?¿-—\n\r\t\"'«»“”")
             if len(candidato) < 4 or len(candidato) > 40:
+                continue
+            # Palabras comunes que el patrón toma como nombre ("Crimen", "Robo", "Video"...)
+            if quitar_tildes(candidato.lower()) in _PALABRAS_NO_NOMBRE or tiene_senal_conflicto(candidato):
                 continue
             if candidato in descartar or candidato.title() in descartar or candidato.lower() in {d.lower() for d in descartar} or candidato.lower() in partidos_set:
                 continue

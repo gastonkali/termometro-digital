@@ -193,7 +193,9 @@ def filtrar_nota(nota: Dict[str, Any]) -> Tuple[bool, str, Optional[Dict[str, An
     excluir, motivo = es_tema_excluido(titulo, texto, nota.get("medio", ""))
     if excluir:
         return False, motivo, None
-    if es_exclusion_geografica(texto):
+    # El nombre del medio también cuenta: "Prensa Libre Formosa", "La Voz de Misiones",
+    # "Cuestión Entrerriana" suelen hablar de su provincia aunque el título no la nombre.
+    if es_exclusion_geografica(f"{texto} — {nota.get('medio', '')}"):
         return False, "sin lugar de PBA en el título / otra provincia", None
     info = clasificar_hallazgo(
         titulo=f"{nota['medio']}: {titulo}", texto=texto,

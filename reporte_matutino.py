@@ -41,10 +41,10 @@ def ejecutar_reporte_matutino(horas_atras: int = 12):
     hallazgos_12hs = conn.execute(
         """
         SELECT * FROM hallazgos 
-        WHERE fecha_deteccion >= ? AND descartado = 0
+        WHERE (fecha_deteccion >= ? OR ultima_deteccion >= ?) AND descartado = 0
         ORDER BY es_convocatoria DESC, relevancia DESC, id DESC
         """,
-        (corte_iso,),
+        (corte_iso, corte_iso),
     ).fetchall()
 
     convocatorias = [h for h in hallazgos_12hs if h["es_convocatoria"] == 1]

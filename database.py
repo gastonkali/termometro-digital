@@ -12,6 +12,7 @@ Gestiona:
 import hashlib
 import json
 import os
+import re
 import sqlite3
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -124,6 +125,10 @@ _COLUMNAS_NUEVAS_HALLAZGOS = {
     "num_comentarios": "INTEGER DEFAULT 0",
     "num_compartidos": "INTEGER DEFAULT 0",
     "num_reacciones": "INTEGER DEFAULT 0",
+    # Última edición / momento en que se volvió a ver la publicación. Antes una publicación
+    # ya guardada no volvía a aparecer en ningún reporte aunque siguiera activa.
+    "ultima_edicion_id": "INTEGER",
+    "ultima_deteccion": "TEXT",
 }
 _migrado = False
 
@@ -264,8 +269,9 @@ def insertar_hallazgo(datos: Dict[str, Any]) -> bool:
                 titulo, texto, autor, categoria, termino_detectado, variante_usada,
                 partido, anclaje_usado, pasada, es_convocatoria, modificadores_agenda,
                 nombres_propios, relevancia, imagen_url, comentarios_json,
-                num_comentarios, num_compartidos, num_reacciones
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                num_comentarios, num_compartidos, num_reacciones,
+                ultima_edicion_id, ultima_deteccion
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 datos.get("edicion_id", 1),
@@ -292,6 +298,8 @@ def insertar_hallazgo(datos: Dict[str, Any]) -> bool:
                 int(metricas.get("comentarios") or 0),
                 int(metricas.get("compartidos") or 0),
                 int(metricas.get("reacciones") or 0),
+                datos.get("edicion_id", 1),
+                ahora,
             ),
         )
         conn.commit()
@@ -313,10 +321,19 @@ def insertar_hallazgo(datos: Dict[str, Any]) -> bool:
                 if valor:
                     updates.append(f"{col} = MAX(COALESCE({col}, 0), ?)")
                     params.append(valor)
-            if updates:
-                params.append(u_hash)
-                cur.execute(f"UPDATE hallazgos SET {', '.join(updates)} WHERE url_hash = ?", params)
-                conn.commit()
+            # Vuelve a aparecer: cuenta para esta edición y para la ventana de horas
+            updates.append("ultima_edicion_id = ?")
+            params.append(datos.get("edicion_id", 1))
+            updates.append("ultima_deteccion = ?")
+            params.append(ahora)
+            # Si antes se guardó sin fecha legible y ahora sí se pudo leer, completarla
+            fecha_nueva = str(datos.get("fecha_publicacion") or "")
+            if re.match(r"^\d{4}-\d{2}-\d{2}T", fecha_nueva):
+                updates.append("fecha_publicacion = CASE WHEN fecha_publicacion GLOB '[0-9][0-9][0-9][0-9]-*' THEN fecha_publicacion ELSE ? END")
+                params.append(fecha_nueva)
+            params.append(u_hash)
+            cur.execute(f"UPDATE hallazgos SET {', '.join(updates)} WHERE url_hash = ?", params)
+            conn.commit()
         except Exception:
             pass
         finally:
