@@ -687,7 +687,7 @@ def generar_html_reporte(
   <style>
     @page {{
       size: A4;
-      margin: 14mm 16mm;
+      margin: 10mm 12mm;
     }}
     body {{
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -742,7 +742,7 @@ def generar_html_reporte(
       background: #f8fafc;
       border: 1px solid #e2e8f0;
       border-radius: 6px;
-      margin-bottom: 12px;
+      margin-bottom: 8px;
       overflow: hidden;
     }}
     .clima-box-color {{
@@ -831,7 +831,7 @@ def generar_html_reporte(
       font-size: 7.5pt;
     }}
     table.data-table td {{
-      padding: 6px 8px;
+      padding: 4px 6px;
       border-bottom: 1px solid #e2e8f0;
       vertical-align: top;
       color: #334155;
@@ -865,7 +865,7 @@ def generar_html_reporte(
       font-size: 7.3pt;
       color: #64748b;
       font-style: italic;
-      margin-bottom: 12px;
+      margin-bottom: 8px;
     }}
 
     /* DESTACADO */
@@ -873,8 +873,8 @@ def generar_html_reporte(
       border: 1px solid #e2e8f0;
       border-left: 4px solid #d97706;
       border-radius: 6px;
-      padding: 10px 12px;
-      margin-bottom: 12px;
+      padding: 6px 10px;
+      margin-bottom: 8px;
       background: #ffffff;
     }}
     .destacado-flex {{
@@ -1049,7 +1049,7 @@ def generar_html_reporte(
         </tr>
         """
     else:
-        for c in seleccionar_hechos_tabla(clusters_vigentes):
+        for c in seleccionar_hechos_tabla(clusters_vigentes, cantidad=4):
             img_hecho = imagen_embebida(imagen_de_hecho(c))
             if img_hecho:
                 thumb_hecho = (
@@ -1145,7 +1145,7 @@ def generar_html_reporte(
 
         if comentarios_raw and isinstance(comentarios_raw, list):
             comms_items_html = ""
-            for comm in comentarios_raw[:3]:
+            for comm in comentarios_raw[:2]:
                 comm_str = str(comm).strip()
                 if " - · - " in comm_str:
                     c_parts = comm_str.split(" - · - ")
@@ -1230,7 +1230,7 @@ def generar_html_reporte(
     else:
         agenda_html = '<div class="agenda-empty">No se detectaron convocatorias con fecha u horario en este corte.</div>'
 
-    html += """
+    html += f"""
   </div>
 
   <!-- PÁGINA 2: GRUPOS, CONTACTOS Y AGENDA -->
@@ -1255,7 +1255,6 @@ def generar_html_reporte(
 
     <!-- AGENDA DE CONVOCATORIAS -->
     <div class="section-title" style="margin-top: 8px; font-size: 11pt;">Agenda de convocatorias y protestas</div>
-""" + f"""
     {agenda_html}
 
     <div class="section-title" style="margin-top: 10px; font-size: 11pt;">Anexo — Publicaciones descartadas</div>
