@@ -211,6 +211,20 @@ def _metricas_tweet(art) -> Dict[str, int]:
                 out[clave] = max(out[clave], parsear_numero_red(el.get_attribute("aria-label") or ""))
         except Exception:
             pass
+
+    # Fallback para nueva interfaz de X (sin data-testid)
+    if out["reacciones"] == 0 and out["compartidos"] == 0 and out["comentarios"] == 0:
+        try:
+            for btn in art.locator('button, [role="button"]').all():
+                lbl = (btn.get_attribute("aria-label") or "").lower()
+                if "me gusta" in lbl or "likes" in lbl:
+                    out["reacciones"] = max(out["reacciones"], parsear_numero_red(lbl))
+                elif "repost" in lbl or "retweet" in lbl:
+                    out["compartidos"] = max(out["compartidos"], parsear_numero_red(lbl))
+                elif "respuesta" in lbl or "reply" in lbl or "replies" in lbl:
+                    out["comentarios"] = max(out["comentarios"], parsear_numero_red(lbl))
+        except Exception:
+            pass
     return out
 
 
@@ -813,7 +827,7 @@ def extraer_posteos_twitter(page, url_busqueda: str, max_items: int = 8, verbose
 
         # X es una SPA: esperar a que aparezcan los tweets en lugar de 3 s fijos
         try:
-            page.wait_for_selector('article[data-testid="tweet"]', timeout=15000)
+            page.wait_for_selector('article[data-testid="tweet"], article:has(a[href*="/status/"])', timeout=15000)
         except Exception:
             print(f"  ⚠️ [X] 0 tweets — {diagnosticar_pagina_x(page)}")
             return []
@@ -837,11 +851,11 @@ def _parsear_tweets_en_pagina(page, max_items: int, _descartar, verbose: bool = 
     from config_pba import es_exclusion_geografica, es_tema_excluido, es_texto_espanol
 
     tweets: List[Dict[str, Any]] = []
-    articulos = page.locator('article[data-testid="tweet"]').all()
+    articulos = page.locator('article[data-testid="tweet"], article:has(a[href*="/status/"])').all()
     for art in articulos:
         try:
             # Expandir si está cortado con "Mostrar más"
-            show_more = art.locator('[data-testid="tweet-text-show-more-link"]').first
+            show_more = art.locator('[data-testid="tweet-text-show-more-link"], button:has-text("Mostrar más"), button:has-text("Show more")').first
             if show_more.count():
                 try:
                     show_more.click()
@@ -850,7 +864,7 @@ def _parsear_tweets_en_pagina(page, max_items: int, _descartar, verbose: bool = 
                     pass
 
             # Extraer texto del tweet
-            text_el = art.locator('[data-testid="tweetText"]').first
+            text_el = art.locator('[data-testid="tweetText"], div[dir="auto"][lang], div[class*="wrap-anywhere"][dir="auto"]').first
             if not text_el.count():
                 _descartar("sin texto (solo imagen/video)")
                 continue
@@ -875,7 +889,7 @@ def _parsear_tweets_en_pagina(page, max_items: int, _descartar, verbose: bool = 
                 continue
 
             # Extraer autor real
-            author_el = art.locator('[data-testid="User-Name"]').first
+            author_el = art.locator('[data-testid="User-Name"], div[class*="x-middot-group"], a[href*="/status/"]').first
             autor = author_el.inner_text().split("\n")[0].strip() if author_el.count() else "Usuario X"
 
             # Enlace directo al tweet: el <a> que contiene la hora es el del tweet
@@ -915,7 +929,7 @@ def _parsear_tweets_en_pagina(page, max_items: int, _descartar, verbose: bool = 
 
             metricas = _metricas_tweet(art)
 
-            img_el = art.locator('div[data-testid="tweetPhoto"] img').first
+            img_el = art.locator('div[data-testid="tweetPhoto"] img, img[src*="pbs.twimg.com/media/"], img[src*="thumb/"]').first
             img_url = img_el.get_attribute("src") if img_el.count() else ""
 
             comentarios_tw = []
@@ -978,7 +992,7 @@ def extraer_posteos_x_seguidos(page, max_items: int = 8, verbose: bool = False) 
         else:
             print("  ⚠️ [X Siguiendo] no se encontró la pestaña 'Siguiendo'; se lee el inicio tal como está.")
         try:
-            page.wait_for_selector('article[data-testid="tweet"]', timeout=15000)
+            page.wait_for_selector('article[data-testid="tweet"], article:has(a[href*="/status/"])', timeout=15000)
         except Exception:
             print(f"  ⚠️ [X Siguiendo] 0 tweets — {diagnosticar_pagina_x(page)}")
             return []
@@ -1243,6 +1257,8 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
                 fecha_iso, es_vieja = _resolver_fecha(it.get("fechaTxt"), url_fin, txt)
                 if es_vieja:
                     continue
+                if not fecha_iso:
+                    fecha_iso = datetime.now().isoformat(timespec="seconds")
                 partido_det = detectar_partido_en_texto(f"{g_nombre} {autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
 
                 comentarios = [c for c in (it.get("comments") or []) if _comentario_util(c.split(":", 1)[-1], txt)]
@@ -1408,6 +1424,8 @@ def extraer_posteos_referentes_policiales(page, max_items: int = 5) -> List[Dict
                 fecha_iso, es_vieja = _resolver_fecha(it.get("fechaTxt"), url_fin, txt)
                 if es_vieja:
                     continue
+                if not fecha_iso:
+                    fecha_iso = datetime.now().isoformat(timespec="seconds")
                 partido_det = detectar_partido_en_texto(f"{autor} {txt}", partido_por_defecto="Provincia de Buenos Aires")
 
                 comentarios = [c for c in (it.get("comments") or []) if _comentario_util(c.split(":", 1)[-1], txt)]
@@ -1441,8 +1459,8 @@ def extraer_posteos_referentes_policiales(page, max_items: int = 5) -> List[Dict
 
 FEEDS_FACEBOOK_SEGUIDOS = [
     # (url, etiqueta de la fuente)
-    ("https://www.facebook.com/?filter=friends&sk=h_chr", "Facebook (Amigos / Contactos)"),   # solo amigos, más recientes
-    ("https://www.facebook.com/?sk=h_chr", "Facebook (Páginas y perfiles que sigo)"),         # todo lo que seguís, más recientes
+    ("https://www.facebook.com/", "Facebook (Feed de Contactos y Grupos)"),
+    ("https://www.facebook.com/groups/feed/", "Facebook (Feed General de Grupos)"),
 ]
 
 
@@ -1477,8 +1495,11 @@ def _extraer_feed_facebook(page, url_feed: str, etiqueta_fuente: str, max_items:
 
         _inyectar_helpers_js(page)
         items = page.evaluate(r"""() => {
-            const feed = document.querySelector('div[role="feed"]') || document.querySelector('div[role="main"]');
-            const cards = feed ? Array.from(feed.children) : [];
+            let cards = Array.from(document.querySelectorAll('div[role="feed"] > div, div[role="article"], div[data-pagelet*="FeedUnit"]'));
+            if (cards.length <= 2) {
+                const feed = document.querySelector('div[role="feed"]') || document.querySelector('div[role="main"]');
+                if (feed) cards = Array.from(feed.children);
+            }
             const out = [];
             for (const card of cards) {
                 const cardText = (card.innerText || '').toLowerCase();
@@ -2206,19 +2227,44 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
                     "SELECT partido, autor, texto FROM hallazgos WHERE (edicion_id = ? OR ultima_edicion_id = ?) AND descartado = 0 ORDER BY id DESC LIMIT 3",
                     (edicion_id, edicion_id),
                 ).fetchall()
-                grupos_dest = conn.execute(
+                grupos_dest = list(conn.execute(
                     """
                     SELECT id, fuente, autor, partido, titulo, texto, url, imagen_url FROM hallazgos
                     WHERE (edicion_id = ? OR ultima_edicion_id = ?)
                       AND (pasada IN ('grupos_vecinales', 'feed_amigos', 'referentes_policiales', 'instagram_amigos', 'instagram_cuentas', 'x_seguidos')
-                           OR fuente LIKE '%Grupo%' OR fuente LIKE '%Amigos%' OR fuente LIKE '%Virginia%')
+                           OR fuente LIKE '%Grupo%' OR fuente LIKE '%Amigos%' OR fuente LIKE '%Virginia%' OR fuente LIKE '%Instagram%')
+                      AND descartado = 0
                       AND url NOT LIKE '%facebook.com'
                       AND url NOT LIKE '%facebook.com/'
                       AND (url LIKE '%/posts/%' OR url LIKE '%/permalink/%' OR url LIKE '%/status/%' OR url LIKE '%/p/%' OR url LIKE '%/reel/%' OR url LIKE '%fbid=%' OR url LIKE '%/share/%' OR url NOT LIKE '%facebook.com%')
                     ORDER BY (imagen_url IS NOT NULL AND imagen_url != '') DESC, id DESC LIMIT 4
                     """,
                     (edicion_id, edicion_id),
-                ).fetchall()
+                ).fetchall())
+
+                if len(grupos_dest) < 4:
+                    corte_24h = (datetime.now() - timedelta(hours=24)).isoformat(timespec="seconds")
+                    ids_existentes = {g["id"] for g in grupos_dest}
+                    extra_grupos = conn.execute(
+                        """
+                        SELECT id, fuente, autor, partido, titulo, texto, url, imagen_url FROM hallazgos
+                        WHERE (fecha_deteccion >= ? OR ultima_deteccion >= ?)
+                          AND (pasada IN ('grupos_vecinales', 'feed_amigos', 'referentes_policiales', 'instagram_amigos', 'instagram_cuentas', 'x_seguidos')
+                               OR fuente LIKE '%Grupo%' OR fuente LIKE '%Amigos%' OR fuente LIKE '%Virginia%' OR fuente LIKE '%Instagram%')
+                          AND descartado = 0
+                          AND url NOT LIKE '%facebook.com'
+                          AND url NOT LIKE '%facebook.com/'
+                          AND (url LIKE '%/posts/%' OR url LIKE '%/permalink/%' OR url LIKE '%/status/%' OR url LIKE '%/p/%' OR url LIKE '%/reel/%' OR url LIKE '%fbid=%' OR url LIKE '%/share/%' OR url NOT LIKE '%facebook.com%')
+                        ORDER BY (imagen_url IS NOT NULL AND imagen_url != '') DESC, id DESC LIMIT 10
+                        """,
+                        (corte_24h, corte_24h),
+                    ).fetchall()
+                    for eg in extra_grupos:
+                        if eg["id"] not in ids_existentes:
+                            ids_existentes.add(eg["id"])
+                            grupos_dest.append(eg)
+                            if len(grupos_dest) >= 4:
+                                break
                 conn.close()
 
                 datos_edicion = {

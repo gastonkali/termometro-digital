@@ -538,22 +538,28 @@ def generar_html_reporte(
                     ids_vistos.add(r["id"])
                     items_red_propia.append(r)
 
-    # (Antes, si había menos de 3, se completaba con los últimos posteos de la base, aunque
-    #  fueran de días anteriores: por eso aparecían noticias viejas. Ya no se rellena.)
-    if False:
+    # Si en la edición actual hay menos de 4, completar con publicaciones válidas de grupos
+    # y contactos detectadas en las últimas 24 horas (MAX_HORAS_ANTIGUEDAD)
+    if len(items_red_propia) < 4:
         conn = get_conn()
+        corte_24h = (datetime.now() - timedelta(hours=MAX_HORAS_ANTIGUEDAD)).isoformat(timespec="seconds")
         recientes_grupos = conn.execute(
             """
             SELECT * FROM hallazgos
-            WHERE (pasada IN ('grupos_vecinales', 'feed_amigos', 'referentes_policiales', 'instagram_amigos')
+            WHERE (pasada IN ('grupos_vecinales', 'feed_amigos', 'referentes_policiales', 'instagram_amigos', 'instagram_cuentas', 'x_seguidos')
                OR fuente LIKE '%Grupo%'
                OR fuente LIKE '%Amigos%'
-               OR fuente LIKE '%Virginia%')
+               OR fuente LIKE '%Virginia%'
+               OR fuente LIKE '%Instagram%'
+               OR fuente LIKE '%Twitter%')
+              AND descartado = 0
+              AND (fecha_deteccion >= ? OR ultima_deteccion >= ?)
               AND url NOT LIKE '%facebook.com'
               AND url NOT LIKE '%facebook.com/'
               AND (url LIKE '%/posts/%' OR url LIKE '%/permalink/%' OR url LIKE '%/status/%' OR url LIKE '%/p/%' OR url LIKE '%/reel/%' OR url LIKE '%fbid=%' OR url LIKE '%/share/%' OR url NOT LIKE '%facebook.com%')
-            ORDER BY id DESC LIMIT 15
-            """
+            ORDER BY (imagen_url IS NOT NULL AND imagen_url != '') DESC, id DESC LIMIT 15
+            """,
+            (corte_24h, corte_24h),
         ).fetchall()
         conn.close()
         for rg in recientes_grupos:
@@ -1014,24 +1020,6 @@ def generar_html_reporte(
       </div>
     </div>
 
-    <!-- SECCIÓN RELEVAMIENTO DE GRUPOS Y CONTACTOS PROPIOS -->
-    <div class="section-title">Relevamiento exclusivo — Grupos y contactos que sigo</div>
-    <table class="data-table">
-      <thead>
-        <tr>
-          <th style="width: 20%;">Comunidad / Contacto</th>
-          <th style="width: 13%;">Partido</th>
-          <th style="width: 10%; text-align: center;">Imagen</th>
-          <th style="width: 27%;">Publicación y reclamo</th>
-          <th style="width: 22%;">Comentarios de miembros</th>
-          <th style="width: 8%; text-align: center;">Link</th>
-        </tr>
-      </thead>
-      <tbody>
-        {filas_red_propia}
-      </tbody>
-    </table>
-
     <!-- TABLA HECHOS VIGENTES -->
     <div class="section-title">Hechos vigentes y alertas públicas PBA</div>
     <table class="data-table">
@@ -1245,10 +1233,28 @@ def generar_html_reporte(
     html += """
   </div>
 
-  <!-- PÁGINA 2: AGENDA Y ANEXOS -->
+  <!-- PÁGINA 2: GRUPOS, CONTACTOS Y AGENDA -->
   <div class="page">
+    <!-- SECCIÓN RELEVAMIENTO DE GRUPOS Y CONTACTOS PROPIOS -->
+    <div class="section-title" style="margin-top: 0; font-size: 11pt;">Relevamiento exclusivo — Grupos y contactos que sigo</div>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th style="width: 20%;">Comunidad / Contacto</th>
+          <th style="width: 13%;">Partido</th>
+          <th style="width: 10%; text-align: center;">Imagen</th>
+          <th style="width: 27%;">Publicación y reclamo</th>
+          <th style="width: 22%;">Comentarios de miembros</th>
+          <th style="width: 8%; text-align: center;">Link</th>
+        </tr>
+      </thead>
+      <tbody>
+        {filas_red_propia}
+      </tbody>
+    </table>
+
     <!-- AGENDA DE CONVOCATORIAS -->
-    <div class="section-title" style="margin-top: 0; font-size: 11pt;">Agenda de convocatorias y protestas</div>
+    <div class="section-title" style="margin-top: 8px; font-size: 11pt;">Agenda de convocatorias y protestas</div>
 """ + f"""
     {agenda_html}
 
