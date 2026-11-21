@@ -50,6 +50,10 @@ def armar_consultas(partidos: Optional[List[str]] = None, por_consulta: int = PA
     unicos = [p for p in partidos if p not in PARTIDOS_NOMBRE_COMPARTIDO]
     compartidos = [p for p in partidos if p in PARTIDOS_NOMBRE_COMPARTIDO]
     consultas = []
+    # Búsqueda prioritaria de saqueos en PBA en medios
+    consultas.append(
+        f'(saqueo OR saqueos OR "intento de saqueo" OR "intentos de saqueo") ("Buenos Aires" OR bonaerense OR conurbano) when:{VENTANA_BUSQUEDA}'
+    )
     for i in range(0, len(unicos), por_consulta):
         grupo = unicos[i:i + por_consulta]
         consultas.append(f"({' OR '.join(_termino(p) for p in grupo)}) when:{VENTANA_BUSQUEDA}")

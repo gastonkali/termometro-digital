@@ -231,7 +231,7 @@ def extraer_candidatos_pasada_abierta(texto: str) -> List[Tuple[str, str]]:
 
 
 def inferir_categoria_por_contexto(texto_lower: str) -> str:
-    if any(w in texto_lower for w in ("robo", "robaron", "asalto", "tiros", "motochorro", "entraderas", "patrullero", "comisaría", "comisaria")):
+    if any(w in texto_lower for w in ("robo", "robaron", "asalto", "tiros", "motochorro", "entraderas", "patrullero", "comisaría", "comisaria", "saqueo", "saqueos", "saquear", "saquearon")):
         return "seguridad"
     if any(w in texto_lower for w in ("juez", "fiscal", "juicio", "condena", "impune", "asesino")):
         return "justicia"
@@ -507,6 +507,24 @@ def generar_matriz_consultas_multired(
     exclusiones_dork = '-"CABA" -"Capital Federal" -"Policía de la Ciudad" -Córdoba -Rosario'
     anclaje_or = '("provincia de Buenos Aires" OR "bonaerense" OR "conurbano")'
     redes_or = '(site:facebook.com OR site:x.com OR site:twitter.com OR site:instagram.com)'
+
+    # 0. Pasada Prioritaria: Saqueos e intentos de saqueo en Provincia de Buenos Aires
+    saqueos_dork = f'{redes_or} ("saqueo" OR "saqueos" OR "intento de saqueo" OR "intentos de saqueo") {anclaje_or} {exclusiones_dork}'
+    consultas.append(
+        {
+            "pasada": "anclaje_general",
+            "categoria": "seguridad",
+            "termino_base": "saqueos en PBA",
+            "partido": "Provincia de Buenos Aires",
+            "anclaje": "provincia de Buenos Aires / conurbano",
+            "dork_web": saqueos_dork,
+            "fb_search_query": "saqueo saqueos provincia de Buenos Aires",
+            "fb_url": construir_url_facebook_search("saqueo saqueos provincia de Buenos Aires"),
+            "tw_url": construir_url_twitter_search('(saqueo OR saqueos) "Buenos Aires"'),
+            "ig_url": construir_url_instagram_search("saqueos"),
+            "google_url": construir_url_google_search('("saqueo" OR "saqueos") ("provincia de Buenos Aires" OR "conurbano")'),
+        }
+    )
 
     # 1. Pasada 1: Categorías generales en todas las redes
     for cat_key, cat_info in diccionario.items():

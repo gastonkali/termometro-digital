@@ -353,6 +353,7 @@ SENALES_CONFLICTO: List[str] = [
     "narcotrafico", "bunker", "usurpacion", "toma de tierras", "desalojo",
     "sin luz", "sin agua", "despidos", "paro", "estafa", "zona liberada",
     "justicia por", "piden justicia", "hartos", "abandonados", "basta de",
+    "saqueo", "saqueos", "intento de saqueo", "intentos de saqueo", "saquear", "saquearon", "saquean",
     # Reclamos policiales internos
     "sueldo", "sueldos", "salario", "salarial", "acuartelamiento", "acuartelados",
     "sumario", "desafectado", "desafectaron", "traslado compulsivo", "horas cores",
@@ -466,7 +467,8 @@ CATEGORIAS_BASE: Dict[str, Dict[str, object]] = {
             "búnker narco", "balacera", "escrache comisaria", "lo agarraron los vecinos",
             "justicia por mano propia", "linchamiento", "lo lincharon",
             "le quemaron la casa al ladron", "pueblada por seguridad", "entraderas",
-            "motochorros", "robo a mano armada", "tiraron a matar", "alarma vecinal"
+            "motochorros", "robo a mano armada", "tiraron a matar", "alarma vecinal",
+            "saqueo", "saqueos", "intento de saqueo", "intentos de saqueo", "saquear", "saquearon"
         ]
     },
     "justicia": {

@@ -247,7 +247,8 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
         comb_norm = quitar_tildes(comb_total)
         if es_ataque_a_autoridad(comb_norm) or any(w in comb_norm for w in [
             "corte total", "corte de autopista", "cacerolazo", "48 h sin luz", "48 horas sin luz",
-            "balacera", "pueblada", "saqueo", "incendiaron la comisaria", "toma de rehenes", "tiroteo",
+            "balacera", "pueblada", "saqueo", "saqueos", "intento de saqueo", "intentos de saqueo",
+            "saquear", "saquearon", "saquean", "incendiaron la comisaria", "toma de rehenes", "tiroteo",
         ]):
             clima_est = "EN ALERTA"
         elif any(w in comb_norm for w in [
