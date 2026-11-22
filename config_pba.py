@@ -169,20 +169,32 @@ LOCALIDADES_AMBIGUAS: Set[str] = {
 }
 
 # Partidos de PBA que comparten nombre con departamentos/ciudades de otras provincias
-# (sobre todo Mendoza). Si el texto nombra otra provincia, no alcanzan como anclaje.
+# o de otros países (México, Colombia, Perú, Uruguay, España). Si el texto nombra otra
+# provincia o país, no alcanzan como anclaje; en Google Noticias se consultan exigiendo PBA.
 PARTIDOS_NOMBRE_COMPARTIDO: Set[str] = {
     "Maipú", "Rivadavia", "General Alvear", "Junín", "Colón", "Lavalle",
     "General Las Heras", "San Pedro", "Mercedes", "Pila", "Monte", "Salto",
     "General Paz", "Rojas", "Lobos", "Azul", "La Costa", "Puan",
     "Avellaneda", "Pilar", "Moreno", "Escobar",  # Avellaneda (Santa Fe), Pilar (Córdoba)...
     "Bolívar", "Ituzaingó",  # Bolívar (apellido y barrios en todo el país), Ituzaingó (Corrientes)
+    # Compartidos con otros países y provincias (causaban falsos positivos de MX/CO/PE/UY/MDZ/MIS)
+    "Ensenada", "Benito Juárez", "Magdalena", "Dolores", "Campana", "San Cayetano",
+    "San Vicente", "Luján", "Castelli", "Las Flores", "San Isidro", "San Martín",
+    "San Miguel", "San Fernando", "Morón", "General Belgrano", "Saavedra",
+    "Lincoln", "Navarro", "Alberti", "Suipacha",
 }
 
-# Personas o lugares de otras provincias que contienen el nombre de un partido.
+# Personas o lugares de otras provincias/países que contienen el nombre de un partido.
 # Se borran del texto antes de ubicar la publicación (editable).
 NOMBRES_NO_GEOGRAFICOS: List[str] = [
     "ramon lanus", "miguel lanus", "guillermo moreno", "mariano moreno", "pablo escobar",
     "avellaneda santa fe", "pilar cordoba", "lomas de zamora futbol",
+    "lujan de cuyo", "juan jose castelli", "rio magdalena", "magdalena del mar",
+    "magdalena contreras", "magdalena de kino", "sector la campana", "la campana",
+    "beca benito juarez", "alcaldia benito juarez", "ensenada bc", "ensenada baja california",
+    "san vicente del caguan", "san vicente del raspeig", "san vicente misiones",
+    "dolores hidalgo", "moron de la frontera", "san miguel de tucuman",
+    "san fernando del valle", "carlos escobar",
 ]
 
 
@@ -239,6 +251,30 @@ def enmascarar_personas(texto: str) -> str:
                         es_persona = True
                 if es_persona:
                     salida = antes + "(persona)" + despues
+    return salida
+
+
+_RE_LA_PLATA_DINERO = re.compile(
+    r"\b(?:con|sin|por|lavar|robar|robaron|robarse|robo|toda|esa|su|mi|dar|pagar|falta|devolver|"
+    r"gastar|pedir|pide|piden|sacar|llevar|llevo|llevaron|quedarse|estafa\w*|cobr\w*|pon\w*)\s+la\s+plata\b"
+    r"|\bla\s+plata\s+(?:de\s+(?:su|sus|mi|mis|los|las|un|una|la\s+gente|todos)|para\s+|que\s+)",
+    re.IGNORECASE,
+)
+
+
+def enmascarar_falsos_lugares(texto: str) -> str:
+    """Evita falsos positivos donde un nombre de partido se usa como sustantivo común.
+    Ejemplo: 'lavar la plata', 'con la plata para un viaje' (dinero, NO la ciudad de La Plata)."""
+    if not texto:
+        return texto
+    salida = _RE_LA_PLATA_DINERO.sub(
+        lambda m: re.sub(r"\bla\s+plata\b", "(dinero)", m.group(0), flags=re.IGNORECASE),
+        texto,
+    )
+    # Si el texto tiene mayúsculas (es texto normal, no todo minúsculas) y aparece exactamente
+    # "la plata" en minúsculas (no "La Plata" ni "LA PLATA" ni "#laplata"), es dinero.
+    if any(c.isupper() for c in salida):
+        salida = re.sub(r"(?<![#\wÁÉÍÓÚÑáéíóúñ])la plata(?![\wÁÉÍÓÚÑáéíóúñ])", "(dinero)", salida)
     return salida
 
 
@@ -571,16 +607,110 @@ EXCLUSIONES_PROVINCIAS: List[str] = [
     "Neuquén", "Río Negro", "Chubut", "Santa Cruz", "Tierra del Fuego",
     "Entre Ríos", "Paraná", "Corrientes", "Misiones", "Posadas", "Chaco",
     "Resistencia", "Formosa", "Santiago del Estero", "Catamarca", "La Rioja",
-    "San Juan", "San Luis", "La Pampa", "Córdoba", "Cordoba"
+    "San Juan", "San Luis", "La Pampa", "Córdoba", "Cordoba",
+    "Luján de Cuyo", "Juan José Castelli", "MisionesOnline", "Mendoza Today",
+    "Radio Sudamericana", "Diario UNO", "Los Andes", "Trelew", "Bariloche",
+    "Ushuaia", "Comodoro Rivadavia", "Río Cuarto", "Villa María", "San Rafael",
+    "Godoy Cruz", "Guaymallén", "Las Heras Mendoza", "Maipú Mendoza",
 ]
 
 EXCLUSIONES_INTERNACIONALES: List[str] = [
-    "españa", "espana", "madrid", "barcelona", "valencia", "sevilla",
-    "colombia", "bogota", "bogotá", "medellin", "medellín", "cali",
-    "mexico", "méxico", "chile", "santiago de chile", "peru", "perú", "lima",
-    "estados unidos", "eeuu", "usa", "texas", "florida", "miami", "new york", "california",
-    "venezuela", "caracas", "uruguay", "montevideo", "paraguay", "asunción"
+    # Países y gentilicios
+    "españa", "espana", "español", "española",
+    "colombia", "colombiano", "colombiana",
+    "mexico", "méxico", "mexicano", "mexicana",
+    "chile", "chileno", "chilena",
+    "peru", "perú", "peruano", "peruana",
+    "estados unidos", "eeuu", "usa", "estadounidense",
+    "venezuela", "venezolano", "venezolana",
+    "uruguay", "uruguayo", "uruguaya",
+    "paraguay", "paraguayo", "paraguaya",
+    "ecuador", "ecuatoriano", "ecuatoriana",
+    "bolivia", "boliviano", "boliviana",
+    "brasil", "brasileño", "brasileña",
+    "honduras", "guatemala", "el salvador", "nicaragua", "costa rica",
+    "panama", "panamá", "republica dominicana", "república dominicana",
+    "puerto rico", "cuba",
+    # España
+    "madrid", "barcelona", "sevilla", "andalucia", "cataluña", "cataluna",
+    "galicia", "asturias", "bilbao", "malaga", "málaga", "zaragoza", "murcia",
+    "alicante", "cadiz", "cádiz", "guardia civil", "mossos", "ertzaintza",
+    "moron de la frontera", "san vicente del raspeig",
+    # México (estados, ciudades, instituciones, medios y léxico policial)
+    "cdmx", "ciudad de mexico", "sinaloa", "baja california", "quintana roo", "nayarit",
+    "tepic", "cancun", "cancún", "guadalajara", "monterrey", "tijuana", "jalisco",
+    "veracruz", "hermosillo", "chihuahua", "oaxaca", "puebla", "guanajuato", "michoacan",
+    "michoacán", "tamaulipas", "yucatan", "yucatán", "chiapas", "coahuila",
+    "durango", "morelos", "queretaro", "querétaro", "san luis potosi",
+    "tabasco", "tlaxcala", "zacatecas", "aguascalientes", "campeche", "colima",
+    "mexicali", "mazatlan", "mazatlán", "culiacan", "culiacán", "acapulco",
+    "valle de la trinidad", "ensenada bc", "ensenada, bc", "dolores hidalgo",
+    "infonavit", "supermanzana", "beca benito juarez", "alcaldia benito juarez",
+    "catean", "cateo", "catearon", "aseguramiento de arma", "aseguran fusiles",
+    "guardia nacional", "azteca quintana roo", "el mexicano", "semanario zeta",
+    "golpe politico", "nayarit noticias", "colosio",
+    # Colombia
+    "bogota", "bogotá", "medellin", "medellín", "cali", "bucaramanga", "barrancabermeja",
+    "barranquilla", "cartagena", "cucuta", "cúcuta", "pereira", "manizales", "santa marta",
+    "ibague", "ibagué", "villavicencio", "monteria", "montería", "neiva",
+    "popayan", "popayán", "valledupar", "sincelejo", "tunja", "antioquia", "cundinamarca",
+    "tolima", "huila", "caldas", "risaralda", "quindio", "quindío", "narino", "nariño",
+    "cauca", "rio magdalena", "río magdalena", "caracol radio", "q'hubo", "qhubo",
+    "el tiempo colombia", "el espectador", "sector la campana", "san vicente del caguan",
+    # Perú
+    "lima peru", "lima, peru", "arequipa", "trujillo", "chiclayo", "piura", "cusco", "cuzco",
+    "iquitos", "huancayo", "tacna", "callao", "magdalena del mar", "pueblo libre",
+    "miraflores", "san borja", "surco", "rpp noticias", "serenazgo",
+    # Uruguay
+    "montevideo", "paysandu", "paysandú", "punta del este", "canelones",
+    "tacuarembo", "tacuarembó", "soriano", "agesor", "avaluado", "avaluada",
+    # Chile, Venezuela, EEUU, otros
+    "santiago de chile", "valparaiso", "valparaíso", "concepcion", "concepción",
+    "antofagasta", "temuco", "vina del mar", "viña del mar", "carabineros",
+    "caracas", "maracaibo", "barquisimeto", "asuncion", "asunción",
+    "quito", "guayaquil", "cuenca", "cochabamba", "santa cruz de la sierra",
+    "tegucigalpa", "san salvador", "managua", "santo domingo", "la habana",
+    "sao paulo", "rio de janeiro",
+    "texas", "miami", "new york", "california",
 ]
+
+# Dominios de países extranjeros: si la URL pertenece a alguno de estos TLDs o medios
+# extranjeros conocidos, se descarta automáticamente.
+DOMINIOS_EXTRANJEROS_TLD: Tuple[str, ...] = (
+    ".mx", ".co", ".pe", ".uy", ".cl", ".es", ".ve", ".ec", ".bo", ".py",
+    ".cr", ".gt", ".hn", ".sv", ".ni", ".do", ".pa", ".br", ".cu", ".pr",
+    ".us", ".uk", ".fr", ".it", ".de", ".pt",
+)
+
+DOMINIOS_EXTRANJEROS_CONOCIDOS: Tuple[str, ...] = (
+    "lineadirectaportal.com", "golpepolitico.com", "zetatijuana.com", "elimparcial.com",
+    "eluniversal.com.mx", "milenio.com", "excelsior.com.mx", "nmas.com.mx",
+    "eltiempo.com", "elespectador.com", "qhubobucaramanga.com", "caracol.com.co",
+    "rpp.pe", "elcomercio.pe", "agesor.com.uy", "elobservador.com.uy",
+    "montevideo.com.uy", "elpais.com.uy", "subrayado.com.uy", "emol.com",
+    "biobiochile.cl", "latercera.com", "elmundo.es", "elpais.com",
+)
+
+
+def es_url_extranjera(url: str) -> bool:
+    """Devuelve True si la URL apunta a un dominio de otro país (no .ar ni redes globales)."""
+    if not url:
+        return False
+    import urllib.parse
+    try:
+        host = (urllib.parse.urlparse(url).netloc or "").lower().split(":")[0]
+    except Exception:
+        return False
+    if not host or host.endswith(".ar"):
+        return False
+    # Redes sociales y Google Noticias son globales: se filtran por contenido, no por TLD
+    if any(g in host for g in ("facebook.com", "x.com", "twitter.com", "instagram.com", "news.google.com", "youtube.com", "tiktok.com")):
+        return False
+    if any(host == d or host.endswith("." + d) for d in DOMINIOS_EXTRANJEROS_CONOCIDOS):
+        return True
+    if any(host.endswith(tld) for tld in DOMINIOS_EXTRANJEROS_TLD):
+        return True
+    return False
 
 PALABRAS_INGLES_FLAG: List[str] = [
     "translated from", "show original", "the ", "of the", "with the",
@@ -719,25 +849,29 @@ def es_ruido_o_no_conflictividad(texto: str) -> Tuple[bool, str]:
     return False, ""
 
 
-def es_exclusion_geografica(texto: str, partido_objetivo: str = "") -> bool:
+def es_exclusion_geografica(texto: str, partido_objetivo: str = "", url: str = "") -> bool:
     """
     Evalúa si un texto corresponde a CABA, otra provincia o país, o no pertenece a PBA.
     Retorna True si debe ser DESCARTADO.
     """
+    if url and es_url_extranjera(url):
+        return True
+
     if not es_texto_espanol(texto):
         return True
 
-    texto = enmascarar_personas(texto)
+    texto = enmascarar_falsos_lugares(enmascarar_personas(texto))
     t_lower = texto.lower()
+    t_norm_exc = quitar_tildes(t_lower)
 
-    # Descartar países y ciudades extranjeras
+    # Descartar países y ciudades extranjeras (palabra completa, inmune a paréntesis/comas/tildes)
     for inter in EXCLUSIONES_INTERNACIONALES:
-        if f" {inter} " in f" {t_lower} " or f"/{inter}" in t_lower or f"#{inter}" in t_lower:
+        inter_norm = quitar_tildes(inter.lower())
+        if contiene_frase(t_norm_exc, inter_norm) or f"/{inter_norm}" in t_norm_exc or f"#{inter_norm}" in t_norm_exc:
             return True
 
     # Verificar si menciona exclusiones de CABA o provincias
     menciona_otra_provincia_o_caba = False
-    t_norm_exc = quitar_tildes(t_lower)
     for exc in EXCLUSIONES_CABA + EXCLUSIONES_PROVINCIAS:
         if contiene_frase(t_norm_exc, exc) or ("@" in t_lower and quitar_tildes(exc.lower()) in t_norm_exc):
             menciona_otra_provincia_o_caba = True
@@ -788,7 +922,7 @@ def resolver_partido_geografico_preciso(texto: str, partido_sugerido: str = "") 
     3. Mapea localidades específicas (Sarandí, Bernal, Haedo, San Justo, Banfield, etc.) a su Partido real.
     4. Si no hay localidad, busca coincidencia exacta con los 135 partidos.
     """
-    texto = enmascarar_personas(texto)
+    texto = enmascarar_falsos_lugares(enmascarar_personas(texto))
     t_norm = quitar_nombres_no_geograficos(quitar_tildes(texto.lower()))
 
     # Regla específica: Si es corte en Autopista Bs. As.-La Plata pero en Sarandí o Bernal

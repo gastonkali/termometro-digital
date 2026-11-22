@@ -27,6 +27,7 @@ from config_pba import (
     PARTIDOS_PBA,
     es_exclusion_geografica,
     es_tema_excluido,
+    es_url_extranjera,
 )
 
 GOOGLE_NEWS_RSS = "https://news.google.com/rss/search"
@@ -199,11 +200,12 @@ def filtrar_nota(nota: Dict[str, Any]) -> Tuple[bool, str, Optional[Dict[str, An
         return False, motivo, None
     # El nombre del medio también cuenta: "Prensa Libre Formosa", "La Voz de Misiones",
     # "Cuestión Entrerriana" suelen hablar de su provincia aunque el título no la nombre.
-    if es_exclusion_geografica(f"{texto} — {nota.get('medio', '')}"):
-        return False, "sin lugar de PBA en el título / otra provincia", None
+    if es_exclusion_geografica(f"{texto} — {nota.get('medio', '')}", url=nota.get("url", "")):
+        return False, "sin lugar de PBA en el título / otro país o provincia", None
     info = clasificar_hallazgo(
         titulo=f"{nota['medio']}: {titulo}", texto=texto,
         partido_objetivo=detectar_partido_en_texto(texto), pasada="medios",
+        url=nota.get("url", ""), autor=nota.get("medio", ""),
     )
     if not info:
         return False, "sin término del diccionario ni señal de conflicto", None
@@ -261,17 +263,23 @@ def recolectar_noticias(
     aceptadas = aceptadas[:max_noticias]
 
     # Cambiar los links de Google Noticias por el del medio (si se encuentra)
+    # y descartar cualquier dominio extranjero revelado al resolver la redirección.
     if RESOLVER_LINKS:
         resueltos = 0
+        filtradas = []
         for n in aceptadas:
-            if not es_link_google_news(n["url"]):
+            if es_link_google_news(n["url"]):
+                titular = n["titulo"][len(n["autor"]) + 2:] if n["titulo"].startswith(f"{n['autor']}: ") else n["titulo"]
+                directo = resolver_link_directo(titular, n["autor"])
+                if directo:
+                    n["url"] = directo
+                    resueltos += 1
+                time.sleep(PAUSA_RESOLVER)
+            if es_url_extranjera(n["url"]):
+                descartes["dominio extranjero"] = descartes.get("dominio extranjero", 0) + 1
                 continue
-            titular = n["titulo"][len(n["autor"]) + 2:] if n["titulo"].startswith(f"{n['autor']}: ") else n["titulo"]
-            directo = resolver_link_directo(titular, n["autor"])
-            if directo:
-                n["url"] = directo
-                resueltos += 1
-            time.sleep(PAUSA_RESOLVER)
+            filtradas.append(n)
+        aceptadas = filtradas
         print(f"  [Noticias] Links directos al medio: {resueltos}/{len(aceptadas)}")
 
     detalle = ", ".join(f"{k}: {v}" for k, v in sorted(descartes.items(), key=lambda x: -x[1])) or "ninguno"

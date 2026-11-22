@@ -364,12 +364,13 @@ def clasificar_descartes_y_vigentes(hallazgos_raw: List[Dict[str, Any]]) -> Tupl
             continue
 
         # 2. Chequeo geográfico estricto (antes que la fecha, para que un post de
-        #    Mendoza figure como "fuera de alcance" y no como "desactualizado")
-        if es_exclusion_geografica(comb, h.get("partido", "")):
+        #    otro país o provincia figure como "fuera de alcance" y no como "desactualizado")
+        comb_geo = f"{comb} — {h.get('autor', '')}".strip()
+        if es_exclusion_geografica(comb_geo, h.get("partido", ""), url=h.get("url", "")):
             descartados.append({
                 "publicacion": f"{h.get('autor') or h.get('fuente', 'Redes')}",
                 "contenido": recortar_texto_limpio(h.get("texto", h.get("titulo", "")), 130),
-                "motivo": "Fuera de alcance: Ocurrió en CABA u otra provincia.",
+                "motivo": "Fuera de alcance: Ocurrió en otro país, CABA u otra provincia.",
                 "url": h.get("url", "#")
             })
             continue

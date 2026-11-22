@@ -878,19 +878,19 @@ def _parsear_tweets_en_pagina(page, max_items: int, _descartar, verbose: bool = 
                 _descartar("no está en español", texto)
                 continue
 
-            excluir, motivo = es_tema_excluido("", texto)
+            # Extraer autor real antes de filtrar geografía (para detectar medios/cuentas de otros países)
+            author_el = art.locator('[data-testid="User-Name"], div[class*="x-middot-group"], a[href*="/status/"]').first
+            autor = author_el.inner_text().split("\n")[0].strip() if author_el.count() else "Usuario X"
+
+            excluir, motivo = es_tema_excluido("", texto, autor)
             if excluir:
                 _descartar(motivo, texto)
                 continue
 
-            # Filtrar exclusión geográfica de PBA
-            if es_exclusion_geografica(texto, partido_objetivo):
-                _descartar("sin lugar de PBA en el texto / otra provincia", texto)
+            # Filtrar exclusión geográfica de PBA (incluyendo el nombre del autor/medio)
+            if es_exclusion_geografica(f"{autor}: {texto}", partido_objetivo):
+                _descartar("sin lugar de PBA en el texto / otro país o provincia", texto)
                 continue
-
-            # Extraer autor real
-            author_el = art.locator('[data-testid="User-Name"], div[class*="x-middot-group"], a[href*="/status/"]').first
-            autor = author_el.inner_text().split("\n")[0].strip() if author_el.count() else "Usuario X"
 
             # Enlace directo al tweet: el <a> que contiene la hora es el del tweet
             # principal (no el de un tweet citado ni el de /photo/ o /analytics).

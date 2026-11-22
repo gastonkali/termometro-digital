@@ -26,6 +26,7 @@ from config_pba import (
     HASHTAGS_BASE,
     MODIFICADORES_CONVOCATORIA,
     PARTIDOS_CONURBANO,
+    PARTIDOS_NOMBRE_COMPARTIDO,
     PARTIDOS_PBA,
     STOPWORDS_ES,
     contiene_frase,
@@ -113,7 +114,7 @@ def construir_url_twitter_search(query: str) -> str:
     # Todos los filtros van DENTRO de q. Antes el scraper los pegaba al final de la URL
     # y caían en el parámetro f ("f=live+lang%3Aes..."): X no reconocía "live" y mostraba
     # "Destacados" (tweets populares viejos) en vez de "Más recientes".
-    q = f"{query} lang:es -filter:replies -CABA -Cordoba -Madrid"
+    q = f"{query} lang:es -filter:replies -CABA -Cordoba -Madrid -Mexico -Colombia -Peru -Uruguay -Sinaloa"
     return f"https://x.com/search?q={urllib.parse.quote(q)}&src=typed_query&f=live"
 
 
@@ -250,6 +251,8 @@ def clasificar_hallazgo(
     partido_objetivo: str = "",
     anclaje_usado: str = "",
     pasada: str = "anclaje_general",
+    url: str = "",
+    autor: str = "",
 ) -> Optional[Dict[str, Any]]:
     # Solo el cuerpo de la publicación: los comentarios no deben decidir tema ni lugar.
     combinado = f"{titulo} {texto_sin_comentarios(texto)}".strip()
@@ -257,11 +260,12 @@ def clasificar_hallazgo(
     if es_texto_basura_ui(titulo, texto):
         return None
 
-    excluir, _motivo = es_tema_excluido(titulo, texto)
+    excluir, _motivo = es_tema_excluido(titulo, texto, autor)
     if excluir:
         return None
 
-    if es_exclusion_geografica(combinado, partido_objetivo):
+    texto_geo = f"{combinado} — {autor}".strip() if autor else combinado
+    if es_exclusion_geografica(texto_geo, partido_objetivo, url=url):
         return None
 
     diccionario = obtener_diccionario_completo()
@@ -581,7 +585,8 @@ def generar_matriz_consultas_multired(
     )
 
     for partido in lista_partidos:
-        fb_q = f'"{partido}" inseguridad reclamo vecinos'
+        sufijo_pba = ' "Buenos Aires"' if partido in PARTIDOS_NOMBRE_COMPARTIDO else ""
+        fb_q = f'"{partido}"{sufijo_pba} inseguridad reclamo vecinos'
         consultas.append(
             {
                 "pasada": "partido_135",
@@ -589,18 +594,19 @@ def generar_matriz_consultas_multired(
                 "termino_base": f"Núcleo Seguridad {partido}",
                 "partido": partido,
                 "anclaje": partido,
-                "dork_web": f'{redes_or} "{partido}" ("inseguridad" OR "corte de calle" OR "sin luz" OR "reclamo") {exclusiones_dork}',
+                "dork_web": f'{redes_or} "{partido}"{sufijo_pba} ("inseguridad" OR "corte de calle" OR "sin luz" OR "reclamo") {exclusiones_dork}',
                 "fb_search_query": fb_q,
                 "fb_url": construir_url_facebook_search(fb_q),
-                "tw_url": construir_url_twitter_search(f'"{partido}" (inseguridad OR "sin luz" OR reclamo)'),
+                "tw_url": construir_url_twitter_search(f'"{partido}"{sufijo_pba} (inseguridad OR "sin luz" OR reclamo)'),
                 "ig_url": construir_url_instagram_search(f"Reclamo{partido.replace(' ', '')}"),
-                "google_url": construir_url_google_search(f'"{partido}" reclamo vecinos')
+                "google_url": construir_url_google_search(f'"{partido}"{sufijo_pba} reclamo vecinos')
             }
         )
 
     # 4. Pasada Abierta ("vecinos" + partido)
     for partido in lista_partidos:
-        fb_q = f'"vecinos" "{partido}"'
+        sufijo_pba = ' "Buenos Aires"' if partido in PARTIDOS_NOMBRE_COMPARTIDO else ""
+        fb_q = f'"vecinos" "{partido}"{sufijo_pba}'
         consultas.append(
             {
                 "pasada": "pasada_abierta",
@@ -608,12 +614,12 @@ def generar_matriz_consultas_multired(
                 "termino_base": "vecinos (pasada abierta)",
                 "partido": partido,
                 "anclaje": f"vecinos + {partido}",
-                "dork_web": f'{redes_or} "vecinos" "{partido}" {exclusiones_dork}',
+                "dork_web": f'{redes_or} "vecinos" "{partido}"{sufijo_pba} {exclusiones_dork}',
                 "fb_search_query": fb_q,
                 "fb_url": construir_url_facebook_search(fb_q),
-                "tw_url": construir_url_twitter_search(f'"vecinos" "{partido}"'),
+                "tw_url": construir_url_twitter_search(f'"vecinos" "{partido}"{sufijo_pba}'),
                 "ig_url": construir_url_instagram_search(f"Vecinos{partido.replace(' ', '')}"),
-                "google_url": construir_url_google_search(f'"vecinos" "{partido}"')
+                "google_url": construir_url_google_search(f'"vecinos" "{partido}"{sufijo_pba}')
             }
         )
 
@@ -771,6 +777,11 @@ def ingerir_posteos_directos_facebook(
         partido_obj = p.get("partido", "")
         pasada = p.get("pasada", "anclaje_general")
 
+        url = (p.get("url") or "").strip()
+        if not url or not es_url_publicacion_valida(url):
+            # No ingerir publicaciones sin URL verificada directa a la publicación
+            continue
+
         info = clasificar_hallazgo(
             titulo=titulo,
             texto=texto,
@@ -779,13 +790,10 @@ def ingerir_posteos_directos_facebook(
             partido_objetivo=partido_obj,
             anclaje_usado=p.get("anclaje", partido_obj or "Ingesta Directa"),
             pasada=pasada,
+            url=url,
+            autor=p.get("autor", ""),
         )
         if not info:
-            continue
-
-        url = (p.get("url") or "").strip()
-        if not url or not es_url_publicacion_valida(url):
-            # No ingerir publicaciones sin URL verificada directa a la publicación
             continue
 
         total_procesados += 1
