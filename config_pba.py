@@ -160,6 +160,18 @@ LOCALIDADES_A_PARTIDO: Dict[str, str] = {
     "tolosa": "La Plata",
     "villa elvira": "La Plata",
     "san carlos la plata": "La Plata",
+    # General Pueyrredón / Costa / Interior PBA
+    "mar del plata": "General Pueyrredón",
+    "mardel": "General Pueyrredón",
+    "mdp": "General Pueyrredón",
+    "carhue": "Adolfo Alsina",
+    "carhué": "Adolfo Alsina",
+    "rivera": "Adolfo Alsina",
+    # Abreviaturas habituales del conurbano ("Lomas, Echeverría y Ezeiza")
+    "echeverria": "Esteban Echeverría",
+    "echeverría": "Esteban Echeverría",
+    "lomas": "Lomas de Zamora",
+    "varela": "Florencio Varela",
 }
 
 # Localidades cuyo nombre también es apellido o palabra común ("Juancho Martínez",
@@ -349,6 +361,7 @@ PATRONES_CLIMA: List[str] = [
 PATRONES_EFEMERIDES: List[str] = [
     "aniversario", "homenaje", "homenajearon", "conmemoracion", "conmemoro", "recordo su",
     "recordaron a", "a 10 anos", "a 20 anos", "a 30 anos", "a 40 anos", "a 50 anos",
+    "1976", "dictadura militar", "golpe de estado", "memoria verdad y justicia",
 ]
 PATRON_A_N_ANOS = re.compile(r"\ba \d{1,3} anos de\b")
 
@@ -357,6 +370,8 @@ PATRONES_DEPORTES_ESPECTACULOS: List[str] = [
     "primera nacional", "primera b", "primera c", "hockey", "voley", "rugby", "fixture",
     "handball", "futsal", "campeonato", "medalla", "atletismo", "maraton", "seleccion argentina",
     "recital", "cartelera", "estreno", "espectaculo", "show en vivo", "festival de musica",
+    "causa afa", "beligoy", "chiqui tapia", "marixa balli", "showmatch", "gran hermano",
+    "intrusos", "farandula",
 ]
 EXCEPCIONES_VIOLENCIA: List[str] = [
     "incidentes", "barra", "barras", "barrabrava", "balacera", "tiros", "heridos", "herido",
@@ -367,7 +382,9 @@ EXCEPCIONES_VIOLENCIA: List[str] = [
 PATRONES_CLASIFICADOS: List[str] = [
     "permuta", "permutas", "vendo ", "se vende", "alquilo", "alquiler de",
     "busco trabajo", "busco empleo", "preparador fisico", "precio:", "sorteo",
-    "consulto precio", "envios a todo el pais",
+    "consulto precio", "envios a todo el pais", "punto de entrega", "cronograma de entregas",
+    "entregas entrada", "ayuda para recuperar", "bicicleta robada", "bici robada",
+    "empleo a nivel nacional", "sobre el islam",
 ]
 
 # Cuentas/fuentes que no se quieren nunca en el reporte (se busca en autor y título).
@@ -733,7 +750,6 @@ PATRONES_RUIDO_NO_CONFLICTIVIDAD: List[str] = [
     "reunion de fiscales",
     "reunión de fiscales",
     "flf-iap",
-    "iap",
     "operativo sol",
     "drones en la ruta",
     "drones de seguridad vial",
@@ -829,6 +845,13 @@ def generar_variantes_termino(termino: str) -> List[str]:
     return variantes
 
 
+_SENALES_GREMIALES = (
+    "suteba", "ate", "cgt", "cta", "catt", "gremio", "gremial", "sindicato", "sindical",
+    "docentes", "trabajadores", "paro", "salario", "salarios", "paritaria", "paritarias",
+    "despidos", "reclamo", "conflicto laboral", "puestos de trabajo", "movilizacion",
+)
+
+
 def es_ruido_o_no_conflictividad(texto: str) -> Tuple[bool, str]:
     """
     Detecta si una publicación es autopromoción municipal, gacetilla institucional
@@ -838,12 +861,23 @@ def es_ruido_o_no_conflictividad(texto: str) -> Tuple[bool, str]:
 
     if "bertulazzi" in t_norm:
         return True, "Descartado: Caso de fuga ocurrido en CABA (Comuna porteña)"
-    if "parque chacabuco" in t_norm or "comisaria de la ciudad" in t_norm or "policia de la ciudad" in t_norm:
-        return True, "Descartado: Hecho en jurisdicción CABA"
 
+    # Solo descartar por "policía de la ciudad" si el hecho NO ocurrió en un partido/localidad de PBA
+    # (ej. un policía de la Ciudad baleado en Virrey del Pino, La Matanza SÍ es jurisdicción PBA).
+    if "parque chacabuco" in t_norm or "comisaria de la ciudad" in t_norm or "policia de la ciudad" in t_norm:
+        t_geo = quitar_nombres_no_geograficos(t_norm)
+        tiene_lugar_pba = bool(_buscar_localidad(t_geo)) or any(
+            len(p) > 3 and contiene_frase(t_geo, p) for p in PARTIDOS_PBA
+        )
+        if not tiene_lugar_pba:
+            return True, "Descartado: Hecho en jurisdicción CABA"
+
+    es_actividad_gremial = any(contiene_frase(t_norm, g) for g in _SENALES_GREMIALES)
     for patron in PATRONES_RUIDO_NO_CONFLICTIVIDAD:
-        p_norm = quitar_tildes(patron)
-        if p_norm in t_norm:
+        p_norm = quitar_tildes(patron.lower())
+        if "asamblea" in p_norm and es_actividad_gremial:
+            continue
+        if contiene_frase(t_norm, p_norm):
             return True, f"Descartado: Noticia institucional / autopromoción municipal ('{patron}')"
 
     return False, ""
@@ -1073,7 +1107,15 @@ def parsear_fecha_publicacion(texto: str, ahora: Optional[datetime] = None) -> O
     if t in ("justo ahora", "ahora", "just now", "un momento"):
         return ahora
     if t.startswith("ayer") or t.startswith("yesterday"):
-        return ahora - timedelta(days=1)
+        m_hora = re.search(r"(\d{1,2})[:.](\d{2})", t)
+        ayer = ahora - timedelta(days=1)
+        if m_hora:
+            try:
+                return ayer.replace(hour=int(m_hora.group(1)), minute=int(m_hora.group(2)), second=0, microsecond=0)
+            except ValueError:
+                pass
+        # Sin hora explícita, "ayer" no debe descartarse por calendario a las 7 AM (< 24 h)
+        return ahora - timedelta(hours=18)
 
     m = re.fullmatch(r"(\d{1,4})\s*([a-z]+)", t)
     if m:
@@ -1085,13 +1127,20 @@ def parsear_fecha_publicacion(texto: str, ahora: Optional[datetime] = None) -> O
                     return ahora - timedelta(days=365 * n)
                 return ahora - timedelta(**{nombre: n})
 
-    m = re.search(r"(\d{1,2})\s+(?:de\s+)?([a-z]+)\.?(?:\s+(?:de\s+)?(\d{4}))?", t)
+    m = re.search(r"(\d{1,2})\s+(?:de\s+)?([a-z]+)\.?(?:\s+(?:de\s+)?(\d{4}))?(?:\s+a\s+las\s+(\d{1,2})[:.](\d{2}))?", t)
     if m and m.group(2) in _MESES:
         dia = int(m.group(1))
         mes = _MESES[m.group(2)]
         anio = int(m.group(3)) if m.group(3) else ahora.year
         try:
-            fecha = datetime(anio, mes, dia)
+            if m.group(4) and m.group(5):
+                fecha = datetime(anio, mes, dia, int(m.group(4)), int(m.group(5)))
+            else:
+                # Fecha sin hora: usar fin del día (tope ahora) para no descartar por fecha
+                # calendario notas de ayer que tienen menos de 24 h reales.
+                fecha = datetime(anio, mes, dia, 23, 59)
+                if fecha > ahora and fecha.date() == ahora.date():
+                    fecha = ahora
         except ValueError:
             return None
         if not m.group(3) and fecha > ahora + timedelta(days=1):
@@ -1167,28 +1216,97 @@ def describir_fecha(fecha: Optional[datetime], ahora: Optional[datetime] = None)
     return fecha.strftime("%d/%m/%Y %H:%M")
 
 
+def resolver_todos_partidos_en_texto(texto: str, partido_sugerido: str = "") -> List[str]:
+    """Devuelve todos los partidos de PBA mencionados en el texto (en orden de aparición,
+    sin duplicados). Permite detectar hechos multiprovinciales/multidistrito como
+    'cortes de AySA en Lomas, Echeverría y Ezeiza'."""
+    texto_clean = enmascarar_falsos_lugares(enmascarar_personas(texto or ""))
+    t_norm = quitar_nombres_no_geograficos(quitar_tildes(texto_clean.lower()))
+    candidatos: List[Tuple[int, str]] = []
+    for loc, partido_real in LOCALIDADES_A_PARTIDO.items():
+        pos = _posicion_localidad(t_norm, quitar_tildes(loc))
+        if pos >= 0:
+            candidatos.append((pos, partido_real))
+    for partido in PARTIDOS_PBA:
+        pos = posicion_frase(t_norm, partido)
+        if pos >= 0:
+            candidatos.append((pos, partido))
+    candidatos.sort(key=lambda c: c[0])
+    vistos = []
+    for _, p in candidatos:
+        if p not in vistos:
+            vistos.append(p)
+    if not vistos and partido_sugerido and partido_sugerido != "Provincia de Buenos Aires":
+        vistos.append(partido_sugerido)
+    return vistos
+
+
+_RE_IG_AUDIO_BASURA = re.compile(
+    r"(?:Audio\s+original(?:\s+\d+){0,4}(?:\s+[a-zA-Z0-9_.]+)?)",
+    re.IGNORECASE,
+)
+_RE_IG_HANDLE_TIEMPO = re.compile(
+    r"^[a-zA-Z0-9_.]+\s*[•·]\s*\d+\s*(?:min|h|hs|d|sem|m|w)(?:\s+\d+\s+[a-zA-Z0-9_.]+)?\s*",
+    re.IGNORECASE,
+)
+_RE_IG_TIEMPO_SUELTO = re.compile(
+    r"\s*[•·]\s*\d+\s*(?:min|h|hs|d|sem|m|w)\b",
+    re.IGNORECASE,
+)
+
+
+def limpiar_texto_basura_redes(texto: str) -> str:
+    """Quita ruido típico del scrapeo de Instagram/redes ('Audio original 369 17 9 todonoticias',
+    'inforbano • 7 min 3 inforbano', marcas '• 1 h' congeladas al momento del scrapeo)."""
+    if not texto:
+        return ""
+    t = _RE_IG_AUDIO_BASURA.sub(" ", texto)
+    t = _RE_IG_HANDLE_TIEMPO.sub("", t.strip())
+    t = _RE_IG_TIEMPO_SUELTO.sub("", t)
+    return re.sub(r"[ \t]{2,}", " ", t).strip()
+
+
 def resolver_eje_tematico_preciso(texto: str, categoria_sugerida: str = "") -> str:
     """
-    Evita clasificar como 'seguridad' reclamos laborales, puestos de trabajo o servicios públicos.
-    Por ejemplo: 'Tornquist defensa de puestos de trabajo' -> sociales_servicios.
+    Resuelve el eje temático con prioridad clara:
+    1. Hechos delictivos / homicidios / robos / detenciones -> seguridad (nunca sociales/laboral)
+    2. Reclamos laborales o servicios públicos -> sociales_servicios
+    3. Pedidos de justicia / femicidios -> justicia
+    4. Picadas / clandestinas -> eventos_no_autorizados
+    5. Violencia institucional -> imagen_institucional
     """
     t_norm = quitar_tildes(texto.lower())
 
     if any(contiene_frase(t_norm, k) for k in [
-        "puestos de trabajo", "conflicto laboral", "despidos", "fabrica",
-        "cierre de planta", "sin luz", "falta de luz", "corte de luz",
-        "edesur", "edenor", "sin agua", "baja presion", "colectivos", "uta"
+        "violencia policial", "gatillo facil", "policia golpeo", "asuntos internos", "abuso policial"
     ]):
-        return "sociales_servicios"
-
-    if any(contiene_frase(t_norm, k) for k in ["justicia por", "#justiciapor", "femicidio", "crimen de", "asesinato"]):
-        return "justicia"
+        return "imagen_institucional"
 
     if any(contiene_frase(t_norm, k) for k in ["picadas", "juntada de motos", "fiesta clandestina"]):
         return "eventos_no_autorizados"
 
-    if any(contiene_frase(t_norm, k) for k in ["violencia policial", "gatillo facil", "policia golpeo", "asuntos internos"]):
-        return "imagen_institucional"
+    if any(contiene_frase(t_norm, k) for k in [
+        "justicia por", "#justiciapor", "femicidio", "piden justicia", "pedido de justicia",
+        "marcha por justicia", "juicio por", "condena"
+    ]):
+        return "justicia"
+
+    if any(contiene_frase(t_norm, k) for k in [
+        "robo", "robaron", "asalto", "asaltaron", "entradera", "entraderas", "motochorro",
+        "motochorros", "homicidio", "asesinaron", "mataron", "balacera", "tiroteo", "baleado",
+        "baleada", "disparos", "tiros", "detuvieron", "delincuente", "delincuentes", "ladron",
+        "ladrones", "saqueo", "saqueos", "narco", "narcotrafico", "cocaina", "arma de fuego",
+        "inseguridad", "secuestro", "comerciante asesinado", "crimen de", "asesinato"
+    ]):
+        return "seguridad"
+
+    if any(contiene_frase(t_norm, k) for k in [
+        "puestos de trabajo", "conflicto laboral", "despidos", "fabrica", "gremio", "sindicato",
+        "suteba", "paritaria", "cierre de planta", "sin luz", "falta de luz", "corte de luz",
+        "edesur", "edenor", "edelap", "aysa", "absa", "sin agua", "baja presion",
+        "colectivos", "uta", "cortes de agua"
+    ]):
+        return "sociales_servicios"
 
     return categoria_sugerida or "seguridad"
 

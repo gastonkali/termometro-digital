@@ -19,9 +19,12 @@ from config_pba import (
     REPERCUSION_MEDIA,
     STOPWORDS_ES,
     es_ataque_a_autoridad,
+    fecha_publicacion_iso,
+    limpiar_texto_basura_redes,
     quitar_tildes,
     resolver_eje_tematico_preciso,
     resolver_partido_geografico_preciso,
+    resolver_todos_partidos_en_texto,
     texto_sin_comentarios,
 )
 
@@ -198,12 +201,32 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
                 if ("luz" in comb_i or "edesur" in comb_i) and ("luz" in comb_j or "edesur" in comb_j) and ("autopista" in comb_i and "autopista" in comb_j):
                     sim += 0.40
 
+                # Casos conocidos que cambian el titular entre medios (ej. robo a joyería de Bahía
+                # con detenido en Tres Arroyos; delincuente de 16 años / justiciero en Morón;
+                # ataque en moto en Castelar).
+                comb_i_n = quitar_tildes(comb_i)
+                comb_j_n = quitar_tildes(comb_j)
+                mismo_hecho_especifico = (
+                    ("joyeria" in comb_i_n and "joyeria" in comb_j_n and ("bahia" in comb_i_n or "tres arroyos" in comb_i_n) and ("bahia" in comb_j_n or "tres arroyos" in comb_j_n))
+                    or (part_i == "Morón" and part_j == "Morón" and ("16 anos" in comb_i_n or "justiciero" in comb_i_n) and ("16 anos" in comb_j_n or "justiciero" in comb_j_n))
+                    or ("castelar" in comb_i_n and "castelar" in comb_j_n and ("moto" in comb_i_n or "asalto" in comb_i_n or "leguizamon" in comb_i_n) and ("moto" in comb_j_n or "asalto" in comb_j_n or "leguizamon" in comb_j_n))
+                )
+                if mismo_hecho_especifico:
+                    visitados[j] = True
+                    grupo_indices.append(j)
+                    continue
+
                 # Dos partidos distintos solo se agrupan si el texto es casi el mismo hecho
                 # (antes el temporal de Cañuelas se mezclaba con un post de Berisso).
                 genericos = ("", "Provincia de Buenos Aires", "PBA")
                 if part_i not in genericos and part_j not in genericos and part_i != part_j:
                     if sim_matrix[i, j] < 0.6:
                         continue
+
+                # Exigir un mínimo de similitud léxica real (>= 0.18) para no fusionar dos hechos
+                # distintos solo porque comparten partido y categoría (ej. dos casos distintos en Morón).
+                if sim_matrix[i, j] < 0.18:
+                    continue
 
                 if sim >= umbral_similitud:
                     visitados[j] = True
@@ -236,9 +259,17 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
 
         partidos_set = set()
         for it in items_cluster:
-            p = it.get("partido")
-            if p and p != "Provincia de Buenos Aires":
-                partidos_set.add(p)
+            cuerpo_it = texto_sin_comentarios(it.get("texto", "") or it.get("titulo", ""))
+            todos_p = resolver_todos_partidos_en_texto(cuerpo_it, it.get("partido", ""))
+            # Si una sola nota nombra hasta 3 partidos (ej. corte de AySA en Lomas, Echeverría y Ezeiza),
+            # conservar todos; si nombra más (listados provinciales), tomar solo el principal del ítem.
+            if 1 <= len(todos_p) <= 3:
+                for p in todos_p:
+                    partidos_set.add(p)
+            else:
+                p = it.get("partido")
+                if p and p != "Provincia de Buenos Aires":
+                    partidos_set.add(p)
         partido_representativo = " / ".join(sorted(partidos_set)) if partidos_set else rep.get("partido", "PBA")
 
         comb_total = " ".join([f"{it.get('titulo', '')} {it.get('texto', '')}" for it in items_cluster]).lower()
@@ -255,10 +286,11 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
             "puestos de trabajo", "despidos", "marcha", "corte de calle", "corte de ruta", "sin luz",
             "cortaron la calle", "cortan la calle", "cortaron la ruta", "cortan la ruta", "piquete",
             "protesta", "movilizacion", "autoconvocados", "asamblea vecinal", "ruidazo",
-            "homicidio", "asesinato", "asesinaron", "femicidio", "crimen", "sicario", "secuestro",
-            "complot", "atentado", "disparos", "balazos", "tiros", "baleado", "baleada",
-            "herido de bala", "heridos de bala", "arma de fuego", "enfrentamiento armado",
-            "narcomenudeo", "banda narco", "bandas narco", "bunker narco",
+            "homicidio", "asesinato", "asesinaron", "mataron", "murio", "muerte", "femicidio",
+            "crimen", "sicario", "secuestro", "complot", "atentado", "disparos", "balazos",
+            "tiros", "baleado", "baleada", "herido de bala", "heridos de bala", "arma de fuego",
+            "enfrentamiento armado", "narcomenudeo", "banda narco", "bandas narco", "bunker narco",
+            "asalto", "asaltaron", "entradera", "entraderas", "robo a mano armada", "robos",
         ]):
             clima_est = "MODERADO"
         else:
@@ -268,16 +300,32 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
         clima_base = clima_est
         clima_est = escalar_clima(clima_base, repercusion["nivel"])
 
-        # Siempre el titular real de la publicación. (Antes se reemplazaba por títulos fijos
-        # como "Pedido de justicia y marcha", que no decían qué había pasado ni dónde.)
-        titulo_cluster = rep.get("titulo") or "Reclamo vecinal reportado"
-        if True:
-            if ":" in titulo_cluster and not titulo_cluster.startswith("http"):
-                partes_t = titulo_cluster.split(":", 1)
-                if len(partes_t[0]) < 30 and len(partes_t[1].strip()) > 10:
-                    titulo_cluster = partes_t[1].strip()
-            if len(titulo_cluster) > 130:
-                titulo_cluster = titulo_cluster[:130].rsplit(" ", 1)[0] + "..."
+        # Antigüedad del hecho: tomar la PRIMERA publicación conocida del cluster (no la más reciente)
+        fechas_validas = []
+        for it in items_cluster:
+            dt = it.get("fecha_publicacion_dt") or fecha_publicacion_iso(
+                it.get("fecha_publicacion", ""), it.get("url", "")
+            )
+            if dt:
+                fechas_validas.append(dt)
+        fecha_primera_dt = min(fechas_validas) if fechas_validas else None
+        if fecha_primera_dt:
+            rep["fecha_publicacion_dt"] = fecha_primera_dt
+
+        # Siempre el titular real de la publicación, limpio y sin cortes a mitad de palabra.
+        titulo_cluster = limpiar_texto_basura_redes(rep.get("titulo") or "Reclamo vecinal reportado")
+        if ":" in titulo_cluster and not titulo_cluster.startswith("http"):
+            partes_t = titulo_cluster.split(":", 1)
+            if len(partes_t[0]) < 35 and len(partes_t[1].strip()) > 10:
+                titulo_cluster = partes_t[1].strip()
+        # Si el título guardado quedó cortado a mitad de palabra (ej. los antiguos [:75]), reconstruirlo del texto
+        cuerpo_rep = limpiar_texto_basura_redes(texto_sin_comentarios(rep.get("texto") or ""))
+        if cuerpo_rep and len(titulo_cluster) <= 78 and len(cuerpo_rep) > len(titulo_cluster) + 5:
+            primera_linea_cuerpo = cuerpo_rep.split("\n")[0].strip()
+            if primera_linea_cuerpo.lower().startswith(titulo_cluster.rstrip(".…").lower()) and len(primera_linea_cuerpo) > len(titulo_cluster):
+                titulo_cluster = primera_linea_cuerpo
+        if len(titulo_cluster) > 130:
+            titulo_cluster = titulo_cluster[:130].rsplit(" ", 1)[0].rstrip(",;:-–— ") + "…"
 
         # Reacción dinámica basada en comentarios reales de vecinos
         todos_comentarios = []
@@ -303,17 +351,21 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
             else:
                 c_texto = c_primer
             if len(c_texto) > 110:
-                c_texto = c_texto[:110].rsplit(" ", 1)[0] + "..."
+                c_texto = c_texto[:110].rsplit(" ", 1)[0] + "…"
             reaccion = f"Vecinos comentan: “{c_texto}”"
         else:
-            # Antes se inventaba una frase ("Vecinos y familiares se movilizan en reclamo
-            # activo") cuando aparecía la palabra "reclamo". Solo se muestran comentarios reales.
-            reaccion = "Sin comentarios registrados."
+            reaccion = "Sin comentarios registrados"
 
+        # Revalidar convocatorias con el criterio estricto (evita entregas comerciales o bicis robadas)
+        from engine import detectar_modificadores_agenda
         mods_unificados = set()
+        es_conv_real = False
         for it in items_cluster:
-            for m in it.get("modificadores_agenda", []):
-                mods_unificados.add(m)
+            mods_it = detectar_modificadores_agenda(f"{it.get('titulo', '')} {texto_sin_comentarios(it.get('texto', ''))}")
+            if mods_it:
+                es_conv_real = True
+                for m in mods_it:
+                    mods_unificados.add(m)
 
         clusters.append({
             "id_cluster": len(clusters) + 1,
@@ -321,7 +373,7 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
             "titulo_cluster": titulo_cluster,
             "partido": partido_representativo,
             "categoria": rep.get("categoria", "seguridad"),
-            "es_convocatoria": any(it.get("es_convocatoria") for it in items_cluster),
+            "es_convocatoria": es_conv_real,
             "modificadores_agenda": list(mods_unificados),
             "total_menciones": len(items_cluster),
             "fuentes_nombres": fuentes_distintas,
@@ -330,16 +382,19 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
             "comentarios_cluster": todos_comentarios,
             "repercusion": repercusion,
             "clima_base": clima_base,
+            "fecha_publicacion_dt": fecha_primera_dt,
             "representante": rep,
             "hallazgos_relacionados": items_cluster,
             # El link del representante primero (antes el orden era aleatorio por set())
             "urls": list(dict.fromkeys(it.get("url", "") for it in items_cluster if it.get("url")))
         })
 
-    # Orden: gravedad final, luego repercusión (réplicas + comentarios + compartidos)
+    # Orden: primero EN ALERTA con repercusión confirmada (MEDIA/ALTA), luego repercusión,
+    # luego nivel de clima. Así una nota aislada de 1 sola fuente no desplaza un hecho de 6 fuentes.
     clusters.sort(key=lambda c: (
-        NIVELES_CLIMA.index(c["clima_estado"]),
+        1 if (c["clima_estado"] == "EN ALERTA" and c["repercusion"]["nivel"] != "BAJA") else 0,
         c["repercusion"]["puntaje"],
+        NIVELES_CLIMA.index(c["clima_estado"]),
         c["repercusion"]["fuentes"],
         c["repercusion"]["comentarios"],
     ), reverse=True)

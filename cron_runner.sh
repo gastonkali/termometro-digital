@@ -23,5 +23,5 @@ if ! curl -s http://127.0.0.1:9222/json/version > /dev/null; then
     sleep 3
 fi
 
-# 3. Ejecutar el ciclo de monitoreo (se conecta vía CDP a la ventana abierta sin cerrarla)
-"$DIR/.venv/bin/python3" "$DIR/session_scraper.py" --max-consultas 4 >> "$DIR/cron_scraper.log" 2>&1
+# 3. Ejecutar el ciclo de monitoreo con bloqueo exclusivo (evita corridas duplicadas simultáneas)
+flock -n /tmp/termometro_scraper.lock "$DIR/.venv/bin/python3" "$DIR/session_scraper.py" --max-consultas 4 >> "$DIR/cron_scraper.log" 2>&1

@@ -136,16 +136,29 @@ def detectar_partido_en_texto(texto: str, partido_por_defecto: str = "") -> str:
     )
 
 
+_EXCLUSIONES_CONVOCATORIA = (
+    "entregas", "punto de entrega", "cronograma de entregas", "encargos", "carrefour",
+    "bicicleta robada", "bici robada", "ayuda para recuperar", "perro perdido", "mascota perdida",
+    "vendo ", "se vende", "alquilo", "sorteo", "feria americana",
+)
+_MODIFICADORES_CONVOCATORIA_ESTRICTOS = (
+    "convocamos", "convocan", "nos juntamos", "punto de encuentro", "concentramos",
+    "movilizacion", "marcha por", "marcha de", "cacerolazo", "corte total",
+    "corte de autopista", "corte de ruta", "corte de calle", "quema de gomas",
+    "ruidazo", "asamblea vecinal", "piquete", "paro y movilizacion", "vecinos autoconvocados",
+)
+
+
 def detectar_modificadores_agenda(texto: str) -> List[str]:
     t_lower = quitar_tildes(texto.lower())
+    if any(exc in t_lower for exc in _EXCLUSIONES_CONVOCATORIA):
+        return []
     encontrados = []
-    for mod in MODIFICADORES_CONVOCATORIA:
-        m_norm = quitar_tildes(mod.lower())
-        if m_norm == "hs":
-            if re.search(r"\b\d{1,2}(?::\d{2})?\s*hs\b", t_lower):
-                encontrados.append("hs (horario)")
-        elif m_norm in t_lower:
+    for mod in _MODIFICADORES_CONVOCATORIA_ESTRICTOS:
+        if contiene_frase(t_lower, mod):
             encontrados.append(mod)
+    if encontrados and re.search(r"\b\d{1,2}(?::\d{2})?\s*hs\b", t_lower):
+        encontrados.append("hs (horario)")
     return encontrados
 
 
@@ -232,7 +245,12 @@ def extraer_candidatos_pasada_abierta(texto: str) -> List[Tuple[str, str]]:
 
 
 def inferir_categoria_por_contexto(texto_lower: str) -> str:
-    if any(w in texto_lower for w in ("robo", "robaron", "asalto", "tiros", "motochorro", "entraderas", "patrullero", "comisaría", "comisaria", "saqueo", "saqueos", "saquear", "saquearon")):
+    if any(w in texto_lower for w in (
+        "robo", "robaron", "asalto", "asaltaron", "tiros", "tiroteo", "balacera", "baleado",
+        "motochorro", "entraderas", "patrullero", "comisaría", "comisaria", "saqueo", "saqueos",
+        "saquear", "saquearon", "homicidio", "asesinaron", "mataron", "delincuente", "detuvieron",
+        "arma de fuego", "narco", "cocaína", "cocaina", "droga", "inseguridad", "secuestro"
+    )):
         return "seguridad"
     if any(w in texto_lower for w in ("juez", "fiscal", "juicio", "condena", "impune", "asesino")):
         return "justicia"

@@ -37,6 +37,7 @@ from config_pba import (
     describir_fecha,
     es_tema_excluido,
     fecha_publicacion_iso,
+    limpiar_texto_basura_redes,
     texto_sin_comentarios,
     es_ruido_o_no_conflictividad,
     es_exclusion_geografica,
@@ -106,22 +107,27 @@ def limpiar_contexto_nombre(texto: str, max_chars: int = 140) -> str:
 
 
 def agrupar_con_contexto(vigentes: List[Dict[str, Any]], edicion_id: Optional[int] = None) -> List[Dict[str, Any]]:
-    """Agrupa los hechos. Si es el reporte de una edición, suma como contexto las
-    publicaciones de las últimas HORAS_VENTANA_REPLICAS horas de otras ediciones: así,
-    si la misma noticia ya la publicaron otros medios, cuenta como réplica. Solo se
-    devuelven los hechos que tienen al menos una publicación de esta edición."""
-    if not edicion_id:
-        return agrupar_en_clusters(vigentes)
-
+    """Agrupa los hechos sumando como contexto las publicaciones de las últimas
+    HORAS_VENTANA_REPLICAS horas que no estén ya en `vigentes`. Así tanto una edición
+    horaria como el Consolidado 12 h cuentan todas las réplicas del período completo."""
+    ids_vigentes = {v.get("id") for v in vigentes if v.get("id") is not None}
     corte_iso = (datetime.now() - timedelta(hours=HORAS_VENTANA_REPLICAS)).isoformat(timespec="seconds")
     conn = get_conn()
-    filas = conn.execute(
-        "SELECT * FROM hallazgos WHERE (fecha_deteccion >= ? OR ultima_deteccion >= ?) "
-        "AND edicion_id != ? AND COALESCE(ultima_edicion_id, 0) != ? AND descartado = 0",
-        (corte_iso, corte_iso, edicion_id, edicion_id),
-    ).fetchall()
+    if edicion_id:
+        filas = conn.execute(
+            "SELECT * FROM hallazgos WHERE (fecha_deteccion >= ? OR ultima_deteccion >= ?) "
+            "AND edicion_id != ? AND COALESCE(ultima_edicion_id, 0) != ? AND descartado = 0",
+            (corte_iso, corte_iso, edicion_id, edicion_id),
+        ).fetchall()
+    else:
+        filas = conn.execute(
+            "SELECT * FROM hallazgos WHERE (fecha_deteccion >= ? OR ultima_deteccion >= ?) "
+            "AND descartado = 0",
+            (corte_iso, corte_iso),
+        ).fetchall()
     conn.close()
-    contexto, _ = clasificar_descartes_y_vigentes([dict(f) for f in filas])
+    filas_extra = [dict(f) for f in filas if f["id"] not in ids_vigentes]
+    contexto, _ = clasificar_descartes_y_vigentes(filas_extra)
     for c in contexto:
         c["_contexto"] = True
 
@@ -380,10 +386,12 @@ def clasificar_descartes_y_vigentes(hallazgos_raw: List[Dict[str, Any]]) -> Tupl
         h["fecha_publicacion_dt"] = fecha_pub
         vieja = False
         fecha_str = ""
+        # Para convocatorias ("convocan para mañana..."), dar 12 h extra para no descartarlas el día del evento
+        limite_horas = MAX_HORAS_ANTIGUEDAD + (12 if h.get("es_convocatoria") else 0)
         if fecha_pub:
-            if (datetime.now() - fecha_pub).total_seconds() > MAX_HORAS_ANTIGUEDAD * 3600:
+            if (datetime.now() - fecha_pub).total_seconds() > limite_horas * 3600:
                 vieja = True
-                fecha_str = fecha_pub.strftime("%d/%m/%Y")
+                fecha_str = fecha_pub.strftime("%d/%m/%Y %H:%M")
         else:
             anio_actual = datetime.now().year
             m_fecha = re.search(r"\b(20[12]\d)\b", comb)
@@ -411,7 +419,16 @@ def clasificar_descartes_y_vigentes(hallazgos_raw: List[Dict[str, Any]]) -> Tupl
         h["categoria"] = resolver_eje_tematico_preciso(comb, h.get("categoria", ""))
         vigentes.append(h)
 
-    return vigentes, descartados
+    # Deduplicar descartados por URL o contenido (evita filas duplicadas en el Anexo del Consolidado)
+    descartados_unicos = []
+    vistos_desc = set()
+    for d in descartados:
+        clave_d = (d.get("url", "").strip(), d.get("contenido", "")[:60].lower())
+        if clave_d not in vistos_desc:
+            vistos_desc.add(clave_d)
+            descartados_unicos.append(d)
+
+    return vigentes, descartados_unicos
 
 
 def generar_html_reporte(
@@ -421,12 +438,14 @@ def generar_html_reporte(
 ) -> str:
     conn = get_conn()
     if horas_atras:
-        corte_iso = (datetime.now() - timedelta(hours=horas_atras)).isoformat(timespec="seconds")
+        ahora_dt = datetime.now()
+        inicio_dt = ahora_dt - timedelta(hours=horas_atras)
+        corte_iso = inicio_dt.isoformat(timespec="seconds")
         hallazgos_rows = conn.execute(
             "SELECT * FROM hallazgos WHERE fecha_deteccion >= ? OR ultima_deteccion >= ? ORDER BY es_convocatoria DESC, id DESC",
             (corte_iso, corte_iso),
         ).fetchall()
-        edicion_str = f"Consolidado {horas_atras}hs"
+        edicion_str = f"Consolidado {horas_atras} h ({inicio_dt.strftime('%d/%m %H:%M')} a {ahora_dt.strftime('%d/%m %H:%M')})"
         # Solo lo del período (antes se sumaban nombres y palabras de días anteriores)
         nombres_rows_raw = conn.execute(
             "SELECT * FROM nombres_propios WHERE creado_en >= ? ORDER BY id DESC LIMIT 10",
@@ -469,13 +488,19 @@ def generar_html_reporte(
     fuera_alcance_cnt = len(descartados_items) - desactualizadas_cnt
     convocatorias_cnt = sum(1 for c in clusters_vigentes if c["es_convocatoria"])
 
-    # Clima General
-    hay_alerta = any(c["clima_estado"] == "EN ALERTA" for c in clusters_vigentes)
+    # Clima General: una nota aislada de 1 sola fuente (repercusión BAJA) no dispara
+    # el clima general a EN ALERTA por sí sola.
+    alertas_confirmadas = [
+        c for c in clusters_vigentes
+        if c["clima_estado"] == "EN ALERTA" and c["repercusion"]["nivel"] != "BAJA"
+    ]
+    alertas_totales = [c for c in clusters_vigentes if c["clima_estado"] == "EN ALERTA"]
+    hay_alerta = len(alertas_confirmadas) >= 1 or len(alertas_totales) >= 2
     if hay_alerta:
         clima_txt = "EN ALERTA"
         clima_color = "#dc2626"
         clima_bg = "#dc2626"
-    elif any(c["clima_estado"] == "MODERADO" for c in clusters_vigentes):
+    elif any(c["clima_estado"] in ("MODERADO", "EN ALERTA") for c in clusters_vigentes):
         clima_txt = "MODERADO"
         clima_color = "#d97706"
         clima_bg = "#d97706"
@@ -484,24 +509,29 @@ def generar_html_reporte(
         clima_color = "#16a34a"
         clima_bg = "#16a34a"
 
-    # Redacción analítica del Semáforo
+    # Redacción analítica del Semáforo (orden por importancia, respetando mayúsculas y sin doble puntuación)
     focos_activos = [c for c in clusters_vigentes if c["clima_estado"] in ("MODERADO", "EN ALERTA")]
     foco_principal = clusters_vigentes[0] if clusters_vigentes else None
     if foco_principal and clima_txt in ("MODERADO", "EN ALERTA"):
+        reaccion_limpia = foco_principal["reaccion_vecinal"].strip().rstrip(".")
+        titulo_foco = foco_principal["titulo_cluster"].strip().rstrip(".")
         if len(focos_activos) > 1:
-            partidos_foco = ", ".join(sorted(set(c["partido"] for c in focos_activos[:3])))
-            lead_foco = f"<strong>Focos de conflictividad vigentes en: {html_lib.escape(partidos_foco)}</strong>, principalmente con {html_lib.escape(foco_principal['titulo_cluster'].lower())} ({html_lib.escape(foco_principal['reaccion_vecinal'].lower())})."
+            partidos_ordenados = list(dict.fromkeys(c["partido"] for c in focos_activos))[:3]
+            partidos_foco = ", ".join(partidos_ordenados)
+            lead_foco = f"<strong>Focos de conflictividad vigentes en: {html_lib.escape(partidos_foco)}</strong>, principalmente por {html_lib.escape(titulo_foco)} ({html_lib.escape(reaccion_limpia.lower())})."
         else:
-            lead_foco = f"<strong>Foco de conflictividad vigente: {html_lib.escape(foco_principal['partido'])}</strong>, con {html_lib.escape(foco_principal['titulo_cluster'].lower())} ({html_lib.escape(foco_principal['reaccion_vecinal'].lower())})."
+            lead_foco = f"<strong>Foco de conflictividad vigente: {html_lib.escape(foco_principal['partido'])}</strong>, por {html_lib.escape(titulo_foco)} ({html_lib.escape(reaccion_limpia.lower())})."
         
+        if convocatorias_cnt > 0:
+            conv_txt = f"Se registran {convocatorias_cnt} convocatoria{'s' if convocatorias_cnt != 1 else ''} en la Agenda."
+        else:
+            conv_txt = "Sin convocatorias masivas con fecha u horario en este corte."
+
         desc_descartes = (
             f" De las {total_relevadas} publicaciones relevadas, {len(descartados_items)} se descartaron por desactualizadas o fuera de alcance (ver Anexo)."
             if descartados_items else " Todas las publicaciones relevadas corresponden al ámbito bonaerense vigente."
         )
-        texto_analisis_clima = (
-            f"{lead_foco}<br/>"
-            f"Sin convocatorias masivas adicionales con fecha u horario en este corte.{desc_descartes}"
-        )
+        texto_analisis_clima = f"{lead_foco}<br/>{conv_txt}{desc_descartes}"
     else:
         texto_analisis_clima = (
             "Sin focos de conflictividad detectados en las publicaciones relevadas en este corte."
@@ -540,7 +570,9 @@ def generar_html_reporte(
                     items_red_propia.append(r)
 
     # Si en la edición actual hay menos de 4, completar con publicaciones válidas de grupos
-    # y contactos detectadas en las últimas 24 horas (MAX_HORAS_ANTIGUEDAD)
+    # y contactos detectadas en las últimas 24 horas (MAX_HORAS_ANTIGUEDAD), pasando los
+    # mismos filtros (para no mostrar ítems descartados ni perder la fecha de X/FB).
+    urls_descartadas_set = {(d.get("url") or "").strip() for d in descartados_items}
     if len(items_red_propia) < 4:
         conn = get_conn()
         corte_24h = (datetime.now() - timedelta(hours=MAX_HORAS_ANTIGUEDAD)).isoformat(timespec="seconds")
@@ -558,15 +590,16 @@ def generar_html_reporte(
               AND url NOT LIKE '%facebook.com'
               AND url NOT LIKE '%facebook.com/'
               AND (url LIKE '%/posts/%' OR url LIKE '%/permalink/%' OR url LIKE '%/status/%' OR url LIKE '%/p/%' OR url LIKE '%/reel/%' OR url LIKE '%fbid=%' OR url LIKE '%/share/%' OR url NOT LIKE '%facebook.com%')
-            ORDER BY (imagen_url IS NOT NULL AND imagen_url != '') DESC, id DESC LIMIT 15
+            ORDER BY (imagen_url IS NOT NULL AND imagen_url != '') DESC, id DESC LIMIT 20
             """,
             (corte_24h, corte_24h),
         ).fetchall()
         conn.close()
-        for rg in recientes_grupos:
-            rg_d = dict(rg)
-            if rg_d["id"] not in ids_vistos:
-                if es_url_publicacion_valida(rg_d.get("url")) and not es_texto_basura_ui(rg_d.get("autor", ""), rg_d.get("texto", "")):
+        recientes_validos, _ = clasificar_descartes_y_vigentes([dict(rg) for rg in recientes_grupos])
+        for rg_d in recientes_validos:
+            u_rg = (rg_d.get("url") or "").strip()
+            if rg_d["id"] not in ids_vistos and u_rg not in urls_descartadas_set:
+                if es_url_publicacion_valida(u_rg) and not es_texto_basura_ui(rg_d.get("autor", ""), rg_d.get("texto", "")):
                     ids_vistos.add(rg_d["id"])
                     items_red_propia.append(rg_d)
                     if len(items_red_propia) >= 4:
@@ -602,11 +635,16 @@ def generar_html_reporte(
         elif comunidad_lbl.startswith(("Amigos", "Contactos")):
             comunidad_lbl = "Feed Amigos / Contactos"
 
-        autor = html_lib.escape(item.get("autor") or "Miembro")
+        autor_raw = (item.get("autor") or "Miembro").strip()
+        txt_raw = item.get("texto") or item.get("titulo") or ""
+        if autor_raw.lower() == "instagram":
+            m_ig_handle = re.match(r"^\s*@?([a-zA-Z0-9_.]{3,30})\s*[•·]", txt_raw)
+            if m_ig_handle:
+                autor_raw = "@" + m_ig_handle.group(1)
+        autor = html_lib.escape(autor_raw)
         partido = html_lib.escape(item.get("partido") or "PBA")
         
-        txt_raw = item.get("texto") or item.get("titulo") or ""
-        txt_limpio = html_lib.escape(recortar_texto_limpio(texto_sin_comentarios(txt_raw), 110))
+        txt_limpio = html_lib.escape(recortar_texto_limpio(limpiar_texto_basura_redes(texto_sin_comentarios(txt_raw)), 110))
         
         img_url = imagen_embebida((item.get("imagen_url") or "").strip())
         url_directa = (item.get("url") or "").strip()
@@ -634,7 +672,10 @@ def generar_html_reporte(
             )
 
         comms_raw = item.get("comentarios") or item.get("comentarios_json") or []
-        fecha_item = describir_fecha(item.get("fecha_publicacion_dt"))
+        dt_item = item.get("fecha_publicacion_dt") or fecha_publicacion_iso(
+            item.get("fecha_publicacion", ""), item.get("url", "")
+        )
+        fecha_item = describir_fecha(dt_item)
         if isinstance(comms_raw, str):
             try:
                 comms_raw = json.loads(comms_raw)
@@ -1050,7 +1091,8 @@ def generar_html_reporte(
         </tr>
         """
     else:
-        for c in seleccionar_hechos_tabla(clusters_vigentes, cantidad=4):
+        cantidad_filas = 6 if horas_atras else 4
+        for c in seleccionar_hechos_tabla(clusters_vigentes, cantidad=cantidad_filas):
             img_hecho = imagen_embebida(imagen_de_hecho(c))
             if img_hecho:
                 thumb_hecho = (
@@ -1078,7 +1120,7 @@ def generar_html_reporte(
                 fuente_td = f'{html_lib.escape(primera_fuente)}{otras_txt}'
 
             reaccion_html = html_comentarios(c.get("comentarios_cluster") or [], max_items=2, max_chars=80)
-            fecha_hecho = describir_fecha(c["representante"].get("fecha_publicacion_dt"))
+            fecha_hecho = describir_fecha(c.get("fecha_publicacion_dt") or c["representante"].get("fecha_publicacion_dt"))
             html += f"""
         <tr>
           <td><span class="pill-clima {pill_class}">{c['clima_estado']}</span></td>
@@ -1115,7 +1157,7 @@ def generar_html_reporte(
             else (rep.get("autor") or "Vecinos")
         )
         plataforma_dest = rep.get("fuente", "Redes Sociales")
-        fecha_pub_dest = describir_fecha(rep.get("fecha_publicacion_dt"))
+        fecha_pub_dest = describir_fecha(destacado_item.get("fecha_publicacion_dt") or rep.get("fecha_publicacion_dt"))
         clima_dest = destacado_item["clima_estado"]
         pill_dest_class = (
             "pill-clima-alerta" if clima_dest == "EN ALERTA"
@@ -1133,8 +1175,13 @@ def generar_html_reporte(
                 f'</div>'
             )
 
-        desc_cruda = texto_sin_comentarios(rep.get("texto") or "") or rep.get("titulo") or destacado_item["titulo_cluster"]
+        desc_cruda = limpiar_texto_basura_redes(texto_sin_comentarios(rep.get("texto") or "")) or rep.get("titulo") or destacado_item["titulo_cluster"]
         desc_limpia = recortar_texto_limpio(desc_cruda, max_chars=260)
+        # Evitar repetir el titular palabra por palabra en el cuerpo del Destacado
+        tit_norm_d = re.sub(r"\W+", "", destacado_item["titulo_cluster"].lower())
+        desc_norm_d = re.sub(r"\W+", "", desc_limpia.lower())
+        es_duplicado_titulo = bool(tit_norm_d) and (desc_norm_d == tit_norm_d or desc_norm_d.startswith(tit_norm_d) and len(desc_norm_d) <= len(tit_norm_d) + 8)
+        desc_html_destacado = "" if es_duplicado_titulo else f'<div class="destacado-desc">{html_lib.escape(desc_limpia)}</div>'
 
         # Comentarios de todas las publicaciones del mismo hecho, no solo de una
         comentarios_raw = destacado_item.get("comentarios_cluster") or rep.get("comentarios") or rep.get("comentarios_json") or []
@@ -1186,9 +1233,7 @@ def generar_html_reporte(
             {html_lib.escape(fuente_destacada)} · {html_lib.escape(plataforma_dest)} · {html_lib.escape(fecha_pub_dest)} · <a class="link-inline" href="{url_destacada}">Abrir publicación original ↗</a>
             <br/><strong>Repercusión {html_lib.escape(destacado_item['repercusion']['nivel'])}:</strong> {html_lib.escape(resumen_repercusion(destacado_item))}
           </div>
-          <div class="destacado-desc">
-            {html_lib.escape(desc_limpia)}
-          </div>
+          {desc_html_destacado}
           {bloque_comentarios}
         </div>
       </div>
@@ -1285,6 +1330,15 @@ def generar_html_reporte(
           <td style="text-align: center;"><a class="link-inline" href="{d_url}">↗</a></td>
         </tr>
             """
+        if len(descartados_items) > 8:
+            restantes_desc = len(descartados_items) - 8
+            html += f"""
+        <tr>
+          <td colspan="4" style="text-align: center; color: #64748b; font-style: italic; font-size: 7.4pt; padding: 4px;">
+            … y {restantes_desc} publicación{"es" if restantes_desc != 1 else ""} descartada{"s" if restantes_desc != 1 else ""} más (total: {len(descartados_items)}).
+          </td>
+        </tr>
+            """
     else:
         html += """
         <tr>
@@ -1314,22 +1368,21 @@ def generar_html_reporte(
 
     filas_anexo_figuras = 0
 
-    # No repetir en el anexo publicaciones descartadas (p. ej. viejas) ni hechos que ya
-    # figuran en las tablas de arriba, y mostrar una sola fila por publicación de origen.
+    # Excluir solo publicaciones descartadas; las figuras mencionadas en hechos vigentes
+    # del reporte SÍ deben listarse aquí, sin duplicar el mismo nombre.
     urls_excluidas_anexo = {(d.get("url") or "").strip() for d in descartados_items}
-    for c in clusters_vigentes:
-        urls_excluidas_anexo.update(u.strip() for u in c.get("urls") or [])
     urls_excluidas_anexo.discard("")
     urls_excluidas_anexo.discard("#")
-    urls_en_anexo = set()
+    nombres_en_anexo = set()
 
-    def _repetida_en_anexo(url_fila: str) -> bool:
+    def _repetida_en_anexo(url_fila: str, nombre_fila: str = "") -> bool:
         u = (url_fila or "").strip()
-        if not u:
-            return False
-        if u in urls_excluidas_anexo or u in urls_en_anexo:
+        if u and u in urls_excluidas_anexo:
             return True
-        urls_en_anexo.add(u)
+        clave_n = (nombre_fila or u).strip().lower()
+        if clave_n in nombres_en_anexo:
+            return True
+        nombres_en_anexo.add(clave_n)
         return False
 
     for nr in nombres_rows:
@@ -1339,7 +1392,7 @@ def generar_html_reporte(
         n_ctx = limpiar_contexto_nombre(nr.get("contexto", ""), 100)
         if es_texto_basura_ui(n_nombre, n_ctx):
             continue
-        if _repetida_en_anexo(nr.get("fuente_url")):
+        if _repetida_en_anexo(nr.get("fuente_url"), n_nombre):
             continue
 
         n_tipo = nr.get("tipo", "Figura / Persona")

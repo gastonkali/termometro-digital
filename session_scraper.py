@@ -26,6 +26,20 @@ os.makedirs(SESSION_DIR, exist_ok=True)
 API_INGEST_URL = "http://127.0.0.1:5055/api/ingest"
 
 
+def _primer_renglon_limpio(texto: str, max_chars: int = 90) -> str:
+    """Devuelve el primer renglón útil sin basura de Instagram/redes y sin cortar palabras por la mitad."""
+    import re as _re
+    from config_pba import limpiar_texto_basura_redes
+    limpio = limpiar_texto_basura_redes(texto or "")
+    linea = next((l.strip() for l in limpio.split("\n") if len(l.strip()) > 15), limpio.split("\n")[0].strip() if limpio else "")
+    linea = " ".join(linea.split()).strip()
+    if len(linea) <= max_chars:
+        return linea
+    recorte = linea[:max_chars].rsplit(" ", 1)[0]
+    recorte = _re.sub(r"[,;:\-–—\s]+$", "", recorte)
+    return (recorte or linea[:max_chars].strip()) + "…"
+
+
 def lanzar_navegador_sesion(headless: bool = False):
     """
     Inicia o se conecta a un contexto de navegador persistente.
@@ -737,7 +751,7 @@ def extraer_posteos_facebook(page, url_busqueda: str, max_items: int = 8) -> Lis
             if es_vieja:
                 continue
 
-            primer_renglon = txt.split("\n")[0][:75].strip()
+            primer_renglon = _primer_renglon_limpio(txt)
             comentarios = []
 
             texto_con_comentarios = txt
@@ -938,7 +952,7 @@ def _parsear_tweets_en_pagina(page, max_items: int, _descartar, verbose: bool = 
             if comentarios_tw:
                 texto_con_comentarios += "\n\n💬 Comentarios destacados de vecinos:\n" + "\n".join(f"• {c}" for c in comentarios_tw)
 
-            primer_renglon = texto.split("\n")[0][:75].strip()
+            primer_renglon = _primer_renglon_limpio(texto)
             tweets.append({
                 "fuente": fuente,
                 "autor": autor,
@@ -1267,7 +1281,7 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
                 if comentarios:
                     texto_full += "\n\n💬 Comentarios destacados de vecinos:\n" + "\n".join(f"• {c}" for c in comentarios)
 
-                primer_renglon = txt.split("\n")[0][:75].strip()
+                primer_renglon = _primer_renglon_limpio(txt)
                 posteos.append({
                     "fuente": f"Facebook (Grupo: {g_nombre})",
                     "autor": autor,
@@ -1434,7 +1448,7 @@ def extraer_posteos_referentes_policiales(page, max_items: int = 5) -> List[Dict
                 if comentarios:
                     texto_full += "\n\n💬 Comentarios destacados de camaradas / vecinos:\n" + "\n".join(f"• {c}" for c in comentarios)
 
-                primer_renglon = txt.split("\n")[0][:75].strip()
+                primer_renglon = _primer_renglon_limpio(txt)
                 posteos.append({
                     "fuente": f"Facebook ({f_item['nombre']})",
                     "autor": autor,
@@ -1577,7 +1591,7 @@ def _extraer_feed_facebook(page, url_feed: str, etiqueta_fuente: str, max_items:
             if comentarios:
                 texto_full += "\n\n💬 Comentarios destacados de vecinos:\n" + "\n".join(f"• {c}" for c in comentarios)
 
-            primer_renglon = txt.split("\n")[0][:75].strip()
+            primer_renglon = _primer_renglon_limpio(txt)
             posteos.append({
                 "fuente": etiqueta_fuente,
                 "autor": autor,
@@ -1710,7 +1724,7 @@ def extraer_posteos_instagram(page, max_items: int = 6) -> List[Dict[str, Any]]:
                     if not txt or len(txt) < 25 or not es_texto_espanol(txt) or es_exclusion_geografica(txt):
                         continue
                     partido_det = detectar_partido_en_texto(txt, partido_por_defecto="Provincia de Buenos Aires")
-                    primer_renglon = next((l for l in txt.split("\n") if len(l.strip()) > 15), txt)[:75].strip()
+                    primer_renglon = _primer_renglon_limpio(txt)
                     posteos.append({
                         "fuente": "Instagram (Seguidos / Amigos)",
                         "autor": autor,
@@ -1777,7 +1791,7 @@ def extraer_posteos_instagram(page, max_items: int = 6) -> List[Dict[str, Any]]:
                         if es_vieja:
                             continue
                         partido_det = detectar_partido_en_texto(f"{autor_ig} {txt_ig}", partido_por_defecto="Provincia de Buenos Aires")
-                        primer_renglon = txt_ig.split("\n")[0][:75].strip()
+                        primer_renglon = _primer_renglon_limpio(txt_ig)
                         posteos.append({
                             "fuente": "Instagram (Hashtags PBA)",
                             "autor": autor_ig,
@@ -1973,7 +1987,7 @@ def extraer_posteos_instagram_cuentas(page, cuentas: Optional[List[str]] = None,
                     print(f"    ✗ {motivo or 'sin lugar de PBA / idioma'}: {txt[:80]!r}")
                 continue
             partido = detectar_partido_en_texto(txt, partido_por_defecto="Provincia de Buenos Aires")
-            primer_renglon = next((l for l in txt.split("\n") if len(l.strip()) > 15), txt)[:75].strip()
+            primer_renglon = _primer_renglon_limpio(txt)
             if verbose:
                 print(f"    ✓ [{partido}] {txt[:80]!r} — {len(datos['comentarios'])} comentarios leídos, métricas {datos['metricas']}")
             posteos.append({
