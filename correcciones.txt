@@ -1,0 +1,95 @@
+1. Errores graves (cambian lo que lee la conducción)
+
+El clima general depende de una nota de una sola fuente. Desde la #109 hasta la #114, el clima queda EN ALERTA y el Destacado es "Morón: un preso amenazó por WhatsApp a la jueza". Esa nota tiene repercusión BAJA (una sola fuente, sin réplicas), porque solo la publicó Diario La Ciudad Ituzaingó. Mientras tanto, hechos con más repercusión quedan por debajo:
+
+La muerte del delincuente de 16 años en Morón tiene repercusión ALTA (6 fuentes) en la #114 y figura como MODERADO.
+La causa AFA/Beligoy tiene repercusión ALTA (9 fuentes) y figura siempre como MODERADO.
+
+La regla de nivel no se aplica igual en todos los casos. La nota al pie dice que una repercusión "ALTA lo sube un nivel":
+
+Se aplica a Bahía Blanca (#112 y #113, EN ALERTA).
+No se aplica a Beligoy ni a Morón 16 años.
+En la #107, "Tres nuevos robos en La Plata" tiene 4 fuentes y es MODERADO. En la #108 tiene 3 fuentes y pasa a EN ALERTA. Con menos repercusión sube de nivel, y eso arrastra el clima general de MODERADO a EN ALERTA.
+
+Se descartan notas que tienen menos de 24 h. El sistema descarta por fecha calendario, no por horas. En el Consolidado de las 07:11 del 23/11 se descartaron como "Desactualizada: 22/11" notas que pueden tener menos de 24 h. El caso más serio es "Convocan para mañana a una movilización en Chascomús": es una convocatoria para hoy y quedó descartada. Pasa lo mismo con:
+
+el virus sincicial en Chivilcoy (#111);
+la nota de Que Pasa Web sobre Castelar (#113);
+la nota de Granja Tres Arroyos en el Consolidado (en la #107 el mismo tema figuraba como vigente).
+
+Hay descartes con motivo equivocado:
+
+#111: "Virrey del Pino, La Matanza" se descartó como "Hecho en jurisdicción CABA". Es PBA: la víctima era un policía de la Ciudad, pero el hecho ocurrió en La Matanza.
+#97 y Consolidado: el reclamo de la CATT a la justicia se descartó como "autopromoción municipal ('iap')". Parece una coincidencia de texto que no tiene que ver con el contenido.
+#114: la asamblea de SUTEBA en La Matanza se descartó como "noticia institucional / autopromoción municipal". Es actividad gremial.
+
+Se publican como convocatorias cosas que no lo son:
+
+#107 y Consolidado: "Noelia Sosa: Entregas" es un cronograma de entregas de una venta (Don Orione 14 h, Carrefour 14:30…). Lo toma por los horarios.
+Consolidado: "Ayuda para recuperar una bicicleta robada".
+#114 (Ensenada): "Enterate 646" no tiene título útil y es un robo comentado.
+
+Además, el resumen dice "Sin convocatorias masivas adicionales" mientras la tarjeta muestra 1 o 2.
+
+2. Clasificación y ubicación
+
+Ejes mal asignados:
+
+El homicidio del comerciante en La Matanza (#97) figura en el eje "sociales / laboral" y es de seguridad.
+La causa AFA/Beligoy también figura como "sociales / laboral". Además se presenta como "foco de conflictividad en Esteban Echeverría" solo porque ahí está el country. No hay ningún conflicto en el distrito.
+
+Partidos mal asignados:
+
+El post "Mardel, la más linda para el turista…" figura como "Provincia de Buenos Aires" y es General Pueyrredón.
+La nota de Britos y Sampaolesi figura como "Baradero / Campana / Chivilcoy" y corresponde solo a Chivilcoy.
+El corte de AySA en Lomas, Echeverría y Ezeiza figura solo en Ezeiza.
+La nota del robo en Carhué no menciona Adolfo Alsina.
+
+Un mismo hecho aparece como dos filas distintas:
+
+El robo a la joyería de Bahía Blanca aparece como "Lo investigan por un robo en Carhué…" (Bahía Blanca / Tres Arroyos) y como "Cayó en Tres Arroyos un delincuente…".
+La muerte del ladrón de 16 años en Morón aparece en la #113 como "¿Justiciero anónimo?…" y en la #114 como "Morón: un delincuente de 16 años murió…".
+El caso de Castelar (Alejo Leguizamón) aparece en la #97 como "Brutal asalto en Castelar" y en la #112 y #113 como "Lo tiraron de la moto". Aparte, una fuente dice 18 años y otra 19.
+
+Entra material fuera de tema o sin fecha:
+
+un tweet personal sobre el islam (#107);
+un homenaje de 1976 en Olavarría (#108);
+empleo a nivel nacional (#109 y #110);
+"Crecen los saqueos en todo el país, Marixa Balli…" (Consolidado). Esta última figura EN ALERTA, asignada a La Plata y con "Fecha no verificada".
+
+Aparece descartado y publicado a la vez: Virrey del Pino (#111 a #113), CATT (#97) y Castelar (#113) figuran en el Anexo de descartes y en "Grupos y contactos que sigo" del mismo reporte.
+
+3. Fechas y antigüedad
+Fechas de X que se pierden entre ediciones. El pie dice que la fecha de X sale del ID de la publicación, que es un dato fijo. Aun así, posts con hora en una edición pasan a "Fecha no verificada" en la siguiente:
+"Cayó en Gonnet…": Hace 17 h → no verificada.
+"Sextorsión": Hace 19 h → no verificada.
+A24 Castelar: Hace menos de 1 h → no verificada.
+Primer Plano: Hace 2 h → no verificada.
+El post de Facebook del grupo "VECINOS Unidos de Lomas…" sigue el mismo patrón.
+La antigüedad se toma de la fuente más reciente, no de la primera publicación.
+En la #114, Morón 16 años dice "Hace menos de 1 h", pero Oeste Noticias ya lo había publicado a las 07:09 (#109).
+Beligoy figura "Hace 7 h" en la #97 (22/11 19:13) y "Hace 8 h" en la #107 (23/11 05:11).
+Instagram muestra una hora vieja. El texto conserva el "• 1 h" del momento del scrapeo, y el mismo post figura como "Hace 1 h", "Fecha no verificada" y "Hace 2 h" en distintas ediciones.
+4. El Consolidado 12 h no consolida
+Tiene el mismo corte que la #110 (07:11) y no indica qué franja horaria cubre.
+Muestra solo 4 hechos. Faltan los tres robos de La Plata (12 compartidos), el corte de AySA (4 fuentes) y Britos/Chivilcoy, que estaban vigentes en las ediciones horarias del mismo período.
+Para Beligoy informa 7 fuentes, cuando las ediciones horarias marcaban 9. Un consolidado no debería tener menos fuentes que una edición parcial.
+En el Anexo, la CATT figura dos veces.
+El Anexo dice "35 descartadas" pero lista 8.
+5. Problemas generales y de formato
+Casi no se capturan comentarios. Prácticamente todas las filas dicen "Sin comentarios registrados", incluso las que tienen 12 compartidos. Solo un post de Facebook trae comentarios. Como el termómetro tiene que basarse en comentarios, la columna "Reacción vecinal" no está aportando nada.
+El Anexo de descartes se corta en 8 filas sin decir "y X más": la #107 informa 10 descartes, la #111 y la #113 también 10, y el Consolidado 35.
+Ediciones duplicadas: la #109 (07:09) y la #110 (07:11) salieron con 2 minutos de diferencia, junto con el Consolidado (07:11), y tienen contenido distinto: el corte de AySA de Ezeiza se reemplaza por el de Lomas. El corte de Ezeiza aparece y desaparece entre ediciones (#108, #109, #112) sin causa visible.
+Frecuencia: las ediciones salen cada hora. Tenía anotado que habías elegido un barrido cada 3 horas; si lo cambiaste, ignorá esto.
+Formato del resumen:
+El título del hecho aparece todo en minúsculas ("causa afa: denuncian que beligoy…").
+Hay doble puntuación: "(sin comentarios registrados.).".
+Los focos se listan en orden alfabético y no por importancia; en la #111 La Plata queda afuera.
+Títulos cortados sin "…": "estará" (#107), "en qué zona" (#110), "robo de un aut" (#114), "Marixa Balli cuenta lo que" (Consolidado).
+Texto basura del scrapeo:
+"Audio original 369 17 9 todonoticias".
+"inforbano • 7 min 3 inforbano".
+El autor figura como "Por: Instagram" en vez del nombre de la cuenta.
+En el Destacado, el cuerpo repite el título palabra por palabra.
+El Anexo de figuras públicas siempre sale vacío, aunque en el contenido aparecen Beligoy, Britos, Sampaolesi y Antonio Laje. Si el anexo solo toma menciones en comentarios, esto se explica porque no se están capturando comentarios.
