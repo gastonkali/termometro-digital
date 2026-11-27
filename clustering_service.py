@@ -21,6 +21,8 @@ from config_pba import (
     es_ataque_a_autoridad,
     fecha_publicacion_iso,
     limpiar_texto_basura_redes,
+    es_convocatoria_futura,
+    quitar_prefijo_medio,
     quitar_tildes,
     resolver_eje_tematico_preciso,
     resolver_partido_geografico_preciso,
@@ -119,11 +121,30 @@ TEMAS_CLAVE_CONOCIDOS = [
 ]
 
 
-def limpiar_texto_para_clustering(texto: str) -> str:
+def _palabras_de_lugares() -> set:
+    """Palabras de los nombres de partidos y localidades. Se sacan al comparar textos:
+    si no, "Ecos Diarios Necochea: Detuvieron en Necochea..." y "Noticias de Necochea:
+    vuelven los colectivos" se parecían solo por repetir el nombre del lugar."""
+    from config_pba import LOCALIDADES_A_PARTIDO, PARTIDOS_PBA
+    palabras = set()
+    for nombre in list(PARTIDOS_PBA) + list(LOCALIDADES_A_PARTIDO.keys()) + list(LOCALIDADES_A_PARTIDO.values()):
+        for w in re.sub(r"[^\w\s]", " ", quitar_tildes(str(nombre).lower())).split():
+            if len(w) > 2 and w not in STOPWORDS_ES:
+                palabras.add(w)
+    return palabras
+
+
+_PALABRAS_LUGARES = _palabras_de_lugares()
+
+
+def limpiar_texto_para_clustering(texto: str, autor: str = "") -> str:
     t = quitar_tildes(texto.lower())
     t = re.sub(r"https?://\S+", " ", t)
     t = re.sub(r"[^\w\s]", " ", t)
-    palabras = [w for w in t.split() if w not in STOPWORDS_ES and len(w) > 2]
+    # Tampoco cuenta el nombre del medio o de la cuenta, que encabeza los títulos
+    # ("Noticias de Necochea: ...")
+    quitar = set(re.sub(r"[^\w\s]", " ", quitar_tildes((autor or "").lower())).split()) | _PALABRAS_LUGARES
+    palabras = [w for w in t.split() if w not in STOPWORDS_ES and len(w) > 2 and w not in quitar]
     return " ".join(palabras)
 
 
@@ -145,11 +166,11 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
         return []
 
     for h in hallazgos:
-        comb = texto_sin_comentarios(h.get('texto', '') or h.get('titulo', ''))
+        comb = quitar_prefijo_medio(texto_sin_comentarios(h.get('texto', '') or h.get('titulo', '')), h.get("autor", ""))
         h["partido"] = resolver_partido_geografico_preciso(comb, h.get("partido", ""))
         h["categoria"] = resolver_eje_tematico_preciso(comb, h.get("categoria", ""))
 
-    textos_limpios = [limpiar_texto_para_clustering(f"{h.get('titulo', '')} {h.get('texto', '')}") for h in hallazgos]
+    textos_limpios = [limpiar_texto_para_clustering(f"{h.get('titulo', '')} {h.get('texto', '')}", h.get("autor", "")) for h in hallazgos]
     textos_validos = [t if t.strip() else "reclamo vecinal" for t in textos_limpios]
 
     try:
@@ -163,74 +184,74 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
     visitados = [False] * n
     clusters = []
 
+    combs = [f"{h.get('titulo', '')} {h.get('texto', '')}".lower() for h in hallazgos]
+    temas = [detectar_tema_clave_unificado(c) for c in combs]
+    genericos = ("", "Provincia de Buenos Aires", "PBA")
+
+    def mismo_partido(a: str, b: str) -> bool:
+        # "San Nicolás / Trenque Lauquen" y "Trenque Lauquen" cuentan como el mismo
+        return a == b or (a not in genericos and b not in genericos and (a in b or b in a))
+
+    def mismo_hecho(i: int, j: int) -> bool:
+        comb_i, comb_j = combs[i], combs[j]
+        part_i = hallazgos[i].get("partido", "")
+        part_j = hallazgos[j].get("partido", "")
+        # Un tema genérico ("pedido de justicia") solo une publicaciones del mismo partido:
+        # si no, se mezclaban casos distintos de lugares distintos.
+        if temas[i] and temas[i] == temas[j] and mismo_partido(part_i, part_j):
+            return True
+        if sim_matrix is None:
+            return False
+        sim = sim_matrix[i, j]
+        if hallazgos[i].get("categoria", "") == hallazgos[j].get("categoria", ""):
+            sim += 0.10
+        if mismo_partido(part_i, part_j):
+            sim += 0.15
+        if ("luz" in comb_i or "edesur" in comb_i) and ("luz" in comb_j or "edesur" in comb_j) and ("autopista" in comb_i and "autopista" in comb_j):
+            sim += 0.40
+
+        # Casos conocidos que cambian el titular entre medios (ej. robo a joyería de Bahía
+        # con detenido en Tres Arroyos; delincuente de 16 años / justiciero en Morón;
+        # ataque en moto en Castelar).
+        comb_i_n = quitar_tildes(comb_i)
+        comb_j_n = quitar_tildes(comb_j)
+        if (
+            ("joyeria" in comb_i_n and "joyeria" in comb_j_n and ("bahia" in comb_i_n or "tres arroyos" in comb_i_n) and ("bahia" in comb_j_n or "tres arroyos" in comb_j_n))
+            or (part_i == "Morón" and part_j == "Morón" and ("16 anos" in comb_i_n or "justiciero" in comb_i_n) and ("16 anos" in comb_j_n or "justiciero" in comb_j_n))
+            or ("castelar" in comb_i_n and "castelar" in comb_j_n and ("moto" in comb_i_n or "asalto" in comb_i_n or "leguizamon" in comb_i_n) and ("moto" in comb_j_n or "asalto" in comb_j_n or "leguizamon" in comb_j_n))
+        ):
+            return True
+
+        # Dos partidos distintos solo se agrupan si el texto es casi el mismo hecho
+        # (antes el temporal de Cañuelas se mezclaba con un post de Berisso).
+        if part_i not in genericos and part_j not in genericos and not mismo_partido(part_i, part_j):
+            if sim_matrix[i, j] < 0.6:
+                return False
+
+        # Mínimo de similitud léxica real (sin nombres de lugares ni de medios, que ya se
+        # sacaron del texto) para no fusionar dos hechos distintos del mismo partido.
+        if sim_matrix[i, j] < 0.15:
+            return False
+        return sim >= umbral_similitud
+
     for i in range(n):
         if visitados[i]:
             continue
 
         grupo_indices = [i]
         visitados[i] = True
-        comb_i = f"{hallazgos[i].get('titulo', '')} {hallazgos[i].get('texto', '')}".lower()
-        tema_i = detectar_tema_clave_unificado(comb_i)
 
-        for j in range(i + 1, n):
-            if visitados[j]:
-                continue
-            
-            comb_j = f"{hallazgos[j].get('titulo', '')} {hallazgos[j].get('texto', '')}".lower()
-            tema_j = detectar_tema_clave_unificado(comb_j)
-
-            # Un tema genérico ("pedido de justicia") solo une publicaciones del mismo partido:
-            # si no, se mezclaban casos distintos de lugares distintos.
-            if tema_i and tema_j and tema_i == tema_j and hallazgos[i].get("partido") == hallazgos[j].get("partido"):
-                visitados[j] = True
-                grupo_indices.append(j)
-                continue
-
-            if sim_matrix is not None:
-                sim = sim_matrix[i, j]
-                part_i = hallazgos[i].get("partido", "")
-                part_j = hallazgos[j].get("partido", "")
-                cat_i = hallazgos[i].get("categoria", "")
-                cat_j = hallazgos[j].get("categoria", "")
-
-                if cat_i == cat_j:
-                    sim += 0.10
-                if part_i == part_j:
-                    sim += 0.15
-
-                if ("luz" in comb_i or "edesur" in comb_i) and ("luz" in comb_j or "edesur" in comb_j) and ("autopista" in comb_i and "autopista" in comb_j):
-                    sim += 0.40
-
-                # Casos conocidos que cambian el titular entre medios (ej. robo a joyería de Bahía
-                # con detenido en Tres Arroyos; delincuente de 16 años / justiciero en Morón;
-                # ataque en moto en Castelar).
-                comb_i_n = quitar_tildes(comb_i)
-                comb_j_n = quitar_tildes(comb_j)
-                mismo_hecho_especifico = (
-                    ("joyeria" in comb_i_n and "joyeria" in comb_j_n and ("bahia" in comb_i_n or "tres arroyos" in comb_i_n) and ("bahia" in comb_j_n or "tres arroyos" in comb_j_n))
-                    or (part_i == "Morón" and part_j == "Morón" and ("16 anos" in comb_i_n or "justiciero" in comb_i_n) and ("16 anos" in comb_j_n or "justiciero" in comb_j_n))
-                    or ("castelar" in comb_i_n and "castelar" in comb_j_n and ("moto" in comb_i_n or "asalto" in comb_i_n or "leguizamon" in comb_i_n) and ("moto" in comb_j_n or "asalto" in comb_j_n or "leguizamon" in comb_j_n))
-                )
-                if mismo_hecho_especifico:
+        # Una publicación entra al grupo si es el mismo hecho que CUALQUIERA de las que ya
+        # están (antes solo se comparaba con la primera y un mismo hecho quedaba partido
+        # cuando cada medio lo titulaba distinto). Se repite hasta que no entre ninguna más.
+        agrego = True
+        while agrego:
+            agrego = False
+            for j in range(i + 1, n):
+                if not visitados[j] and any(mismo_hecho(m, j) for m in grupo_indices):
                     visitados[j] = True
                     grupo_indices.append(j)
-                    continue
-
-                # Dos partidos distintos solo se agrupan si el texto es casi el mismo hecho
-                # (antes el temporal de Cañuelas se mezclaba con un post de Berisso).
-                genericos = ("", "Provincia de Buenos Aires", "PBA")
-                if part_i not in genericos and part_j not in genericos and part_i != part_j:
-                    if sim_matrix[i, j] < 0.6:
-                        continue
-
-                # Exigir un mínimo de similitud léxica real (>= 0.18) para no fusionar dos hechos
-                # distintos solo porque comparten partido y categoría (ej. dos casos distintos en Morón).
-                if sim_matrix[i, j] < 0.18:
-                    continue
-
-                if sim >= umbral_similitud:
-                    visitados[j] = True
-                    grupo_indices.append(j)
+                    agrego = True
 
         items_cluster = [hallazgos[idx] for idx in grupo_indices]
         # Representante: la publicación con más conversación (su link es el que se muestra).
@@ -259,7 +280,7 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
 
         partidos_set = set()
         for it in items_cluster:
-            cuerpo_it = texto_sin_comentarios(it.get("texto", "") or it.get("titulo", ""))
+            cuerpo_it = quitar_prefijo_medio(texto_sin_comentarios(it.get("texto", "") or it.get("titulo", "")), it.get("autor", ""))
             todos_p = resolver_todos_partidos_en_texto(cuerpo_it, it.get("partido", ""))
             # Si una sola nota nombra hasta 3 partidos (ej. corte de AySA en Lomas, Echeverría y Ezeiza),
             # conservar todos; si nombra más (listados provinciales), tomar solo el principal del ítem.
@@ -361,8 +382,10 @@ def agrupar_en_clusters(hallazgos: List[Dict[str, Any]], umbral_similitud: float
         mods_unificados = set()
         es_conv_real = False
         for it in items_cluster:
-            mods_it = detectar_modificadores_agenda(f"{it.get('titulo', '')} {texto_sin_comentarios(it.get('texto', ''))}")
-            if mods_it:
+            cuerpo_it = f"{it.get('titulo', '')} {texto_sin_comentarios(it.get('texto', ''))}"
+            mods_it = detectar_modificadores_agenda(cuerpo_it)
+            # Solo si la medida es a futuro: "hizo un piquete" es un reclamo reciente
+            if mods_it and es_convocatoria_futura(cuerpo_it):
                 es_conv_real = True
                 for m in mods_it:
                     mods_unificados.add(m)

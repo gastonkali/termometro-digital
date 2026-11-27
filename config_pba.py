@@ -403,6 +403,68 @@ FUENTES_BLOQUEADAS: List[str] = [
     "polymarket", "apuestas", "casino", "bet365", "codere",
 ]
 
+# --- Temas que no interesan según los skills de barrido (editables) -----------------
+# Paros de transporte y de servicios: son noticias de servicio, no reclamos vecinales.
+# Pasan solo si hay vecinos movilizados (ej. "vecinos cortan la ruta por falta de colectivos").
+PATRONES_PARO_TRANSPORTE_SERVICIOS: List[str] = [
+    "paro de colectivos", "paro de la uta", "paro de micros", "paro de trenes",
+    "paro de transporte", "paro del transporte", "paro de choferes", "sin colectivos",
+    "servicio de colectivos", "los colectivos vuelven", "vuelven los colectivos",
+    "medida de fuerza de la uta", "la fraternidad", "paro de recolectores",
+    "paro de la recoleccion", "sin recoleccion", "paro de taxis", "paro de remises",
+]
+EXCEPCIONES_RECLAMO_VECINAL: List[str] = [
+    "vecinos autoconvocados", "vecinos cortan", "vecinos cortaron", "vecinos reclaman",
+    "vecinos reclamaron", "vecinos marcharon", "vecinos se movilizan", "vecinos protestan",
+    "vecinos protestaron", "asamblea vecinal", "asamblea de vecinos", "ruidazo", "cacerolazo",
+    "justicia por", "piden justicia",
+]
+
+# Eventos culturales, identitarios o festivos: no son reclamos ni conflictividad.
+PATRONES_EVENTOS_CULTURALES: List[str] = [
+    "marcha del orgullo", "orgullo lgbt", "orgullo lgbtiq", "orgullo disidente", "pride",
+    "diversidad sexual", "fiesta provincial", "fiesta nacional", "feria de artesanos",
+    "festival", "peña", "carnaval", "desfile", "encuentro cultural", "muestra de arte",
+]
+
+# Conflictos nacionales: no interesan (regla del skill de visita). Se mantienen las
+# organizaciones sociales, porque sus jornadas nacionales tienen réplicas locales.
+PATRONES_CONFLICTO_NACIONAL: List[str] = [
+    "presupuesto nacional", "congreso de la nacion", "frente al congreso", "plaza de mayo",
+    "paro nacional", "marcha federal", "universidades nacionales", "financiamiento universitario",
+    "paro universitario", "hospitales nacionales", "garrahan", "iosfa", "casa rosada",
+]
+EXCEPCIONES_ORGANIZACIONES_SOCIALES: List[str] = [
+    "utep", "mte", "movimiento evita", "ccc", "polo obrero", "barrios de pie", "fol",
+    "libres del sur", "olla popular", "ollazo", "comedores", "merenderos",
+    "emergencia alimentaria",
+]
+
+# Resultados policiales y judiciales (detenciones, condenas): no son reclamos. Se miran
+# solo en el título, y pasan si el título habla de un hecho grave (homicidio, crimen) o
+# si hay un reclamo (marcha, justicia por, vecinos).
+PATRONES_RESULTADO_POLICIAL: List[str] = [
+    "cayo un", "cayo una", "cayeron", "fue detenido", "fue detenida", "fueron detenidos",
+    "detuvieron a", "detienen a", "detuvieron en", "aprehendieron", "aprehendido",
+    "capturaron", "con pedido de captura", "allanamiento", "allanamientos", "operativo",
+    "condenaron", "condenado a", "condenada a", "condena a", "anos de prision", "años de prision",
+    "prision perpetua", "secuestraron droga", "incautaron",
+]
+EXCEPCIONES_HECHO_GRAVE: List[str] = [
+    "mataron", "asesinaron", "asesinado", "asesinada", "asesinato de", "crimen de",
+    "murio", "muerto", "muerta", "femicidio", "lo mataron", "la mataron", "balearon",
+    "apunalado", "apunalada", "desaparecido", "desaparecida",
+]
+
+# Conflictos cerrados formalmente: van al anexo.
+PATRONES_CONFLICTO_CERRADO: List[str] = [
+    "levantaron el paro", "levantan el paro", "se levanto el paro", "se levantaria el paro",
+    "tras levantar el paro", "levantaron la medida", "levantaron las medidas",
+    "se normalizo el servicio", "se normaliza el servicio", "finalizo el conflicto",
+    "se destrabo el conflicto",
+]
+
+
 # Palabras que indican un conflicto/reclamo concreto (habilitan clima y sirven como
 # relevancia mínima para publicaciones que no matchean el diccionario).
 SENALES_CONFLICTO: List[str] = [
@@ -1105,7 +1167,109 @@ def es_tema_excluido(titulo: str, texto: str, autor: str = "") -> Tuple[bool, st
         if not any(contiene_frase(cuerpo, s) for s in EXCEPCIONES_VIOLENCIA):
             return True, "Deportes / espectáculos sin hechos de violencia"
 
+    # Criterios de los skills de barrido
+    if any(contiene_frase(cuerpo, p) for p in PATRONES_EVENTOS_CULTURALES):
+        # Un festival u olla de una organización social sí interesa (presencia organizada)
+        if not any(contiene_frase(cuerpo, s) for s in EXCEPCIONES_VIOLENCIA + EXCEPCIONES_ORGANIZACIONES_SOCIALES):
+            return True, "Evento cultural / identitario, sin reclamo"
+
+    if any(contiene_frase(cuerpo, p) for p in PATRONES_CONFLICTO_CERRADO):
+        return True, "Conflicto cerrado"
+
+    if any(contiene_frase(cuerpo, p) for p in PATRONES_PARO_TRANSPORTE_SERVICIOS):
+        if not any(contiene_frase(cuerpo, s) for s in EXCEPCIONES_RECLAMO_VECINAL):
+            return True, "Paro de transporte / servicios, sin vecinos movilizados"
+
+    if any(contiene_frase(cuerpo, p) for p in PATRONES_CONFLICTO_NACIONAL):
+        if not any(contiene_frase(cuerpo, s) for s in EXCEPCIONES_ORGANIZACIONES_SOCIALES):
+            return True, "Conflicto nacional"
+
+    titulo_norm = quitar_tildes((titulo or texto_sin_comentarios(texto)[:160]).lower())
+    if any(contiene_frase(titulo_norm, p) for p in PATRONES_RESULTADO_POLICIAL):
+        if not any(contiene_frase(titulo_norm, s) for s in EXCEPCIONES_HECHO_GRAVE) and \
+                not any(contiene_frase(cuerpo, s) for s in EXCEPCIONES_RECLAMO_VECINAL + ["marcha", "reclaman", "familiares"]):
+            return True, "Resultado policial / judicial, sin reclamo"
+
     return False, ""
+
+
+# ---------------------------------------------------------------------------
+# Convocatoria a futuro / reclamo reciente / reclamo explícito
+# ---------------------------------------------------------------------------
+# Una convocatoria es algo que VA a pasar: "hizo un piquete" o "se manifestó" es un
+# reclamo reciente (ya realizado), no una convocatoria.
+SENALES_FUTURO: List[str] = [
+    "convocan", "convocamos", "convoca", "convocatoria", "invitan a", "invitamos",
+    "los esperamos", "las esperamos", "nos vemos", "todos a", "todas a", "nos juntamos",
+    "nos concentramos", "concentraremos", "punto de encuentro", "se realizara",
+    "se llevara a cabo", "marcharemos", "marcharan", "se movilizaran", "movilizaremos",
+    "cortaran", "cortaremos", "realizaran", "realizaremos", "habra", "manana",
+    "este lunes", "este martes", "este miercoles", "este jueves", "este viernes",
+    "este sabado", "este domingo", "el proximo", "la proxima", "proximo lunes",
+    "proximo martes", "proximo miercoles", "proximo jueves", "proximo viernes",
+    "proximo sabado", "proximo domingo",
+]
+SENALES_PASADO: List[str] = [
+    "hizo un", "hicieron un", "hicieron una", "realizaron", "se realizo", "realizo un",
+    "realizo una", "marcharon", "se movilizaron", "se manifesto", "se manifestaron",
+    "cortaron", "protestaron", "se concentraron", "reclamaron", "llevaron adelante",
+    "tuvo lugar", "ayer", "anoche", "fue realizada", "se llevo a cabo",
+]
+_RE_HORARIO_FUTURO = re.compile(r"\b(?:a las|desde las|a partir de las)\s*\d{1,2}(?::\d{2})?\b|\b\d{1,2}(?::\d{2})?\s*hs\b")
+SENALES_MOVILIZACION: List[str] = [
+    "marcha", "protesta", "piquete", "corte de calle", "corte de ruta", "corte", "movilizacion",
+    "manifestacion", "ruidazo", "cacerolazo", "ollazo", "olla popular", "concentracion",
+    "escrache", "acampe", "asamblea", "se manifesto", "se manifestaron", "manifestaron",
+    "protestaron", "marcharon", "se movilizaron",
+]
+SENALES_RECLAMO: List[str] = SENALES_MOVILIZACION + [
+    "reclamo", "reclaman", "reclamamos", "reclamaron", "reclamando", "justicia por",
+    "piden justicia", "pedido de justicia", "exigen", "exigimos", "cuestionan", "rechazan",
+    "rechazo", "autoconvocados", "autoconvocadas", "basta de", "hartos", "abandonados",
+    "denuncian", "piden",
+]
+
+
+def quitar_prefijo_medio(texto: str, autor: str = "") -> str:
+    """'Diario El Norte - San Nicolás: Trenque Lauquen: murió...' -> 'Trenque Lauquen: murió...'.
+    El nombre del medio no es el lugar del hecho (si no, la nota quedaba en San Nicolás)."""
+    t = (texto or "").strip()
+    a = (autor or "").strip()
+    if a and t.lower().startswith(a.lower()):
+        resto = t[len(a):].lstrip()
+        if resto.startswith(":"):
+            return resto[1:].lstrip()
+    return t
+
+
+def tiempo_convocatoria(texto: str) -> str:
+    """'futuro', 'pasado' o '' según lo que dice el texto sobre la medida."""
+    t = quitar_tildes(texto_sin_comentarios(texto).lower())
+    if any(contiene_frase(t, s) for s in SENALES_FUTURO):
+        return "futuro"
+    if any(contiene_frase(t, s) for s in SENALES_PASADO):
+        return "pasado"
+    # Un horario solo ("a las 18", "10 hs") cuenta como futuro si nada indica pasado
+    if _RE_HORARIO_FUTURO.search(t):
+        return "futuro"
+    return ""
+
+
+def es_convocatoria_futura(texto: str) -> bool:
+    return tiempo_convocatoria(texto) == "futuro"
+
+
+def es_reclamo_reciente(texto: str) -> bool:
+    """Una movilización ya realizada (marcha, piquete, protesta en pasado)."""
+    t = quitar_tildes(texto_sin_comentarios(texto).lower())
+    return tiempo_convocatoria(texto) == "pasado" and any(contiene_frase(t, s) for s in SENALES_MOVILIZACION)
+
+
+def tiene_reclamo_explicito(texto: str) -> bool:
+    """Hay un reclamo o una movilización, no solo un hecho (un crimen sin vecinos ni
+    familiares reclamando no cuenta)."""
+    t = quitar_tildes(texto_sin_comentarios(texto).lower())
+    return any(contiene_frase(t, s) for s in SENALES_RECLAMO)
 
 
 def tiene_senal_conflicto(texto: str) -> bool:
@@ -1333,12 +1497,35 @@ def resolver_eje_tematico_preciso(texto: str, categoria_sugerida: str = "") -> s
     ]):
         return "justicia"
 
-    if any(contiene_frase(t_norm, k) for k in [
+    hecho_violento = any(contiene_frase(t_norm, k) for k in [
+        "homicidio", "asesinaron", "asesinado", "asesinada", "asesinato", "mataron", "lo mataron",
+        "la mataron", "crimen de", "balacera", "tiroteo", "baleado", "baleada", "balazos",
+        "balearon", "atacaron a tiros", "a tiros",
+        "apunalado", "apunalada", "apuñalado", "apuñalada", "acuchillado", "acuchillada",
+        "murio apunalado", "murió apuñalado", "emboscada", "emboscaron",
+    ])
+
+    # Organizaciones sociales: cuenta el actor (UTEP, MTE, etc.), salvo que el hecho sea
+    # un homicidio o un ataque violento, que sigue siendo seguridad.
+    organizaciones = [
+        "olla popular", "ollazo", "ollas vacias", "comedores comunitarios", "merenderos",
+        "emergencia alimentaria", "utep", "mte", "movimiento evita", "polo obrero",
+        "barrios de pie", "corriente clasista y combativa", "ccc", "salario social",
+        "volver al trabajo", "por el pan en la mesa", "organizaciones sociales",
+        "movimientos sociales", "movimiento social", "piqueteros", "piqueteras",
+        "libres del sur", "frente de organizaciones en lucha", "economia popular",
+        "jornada nacional de lucha",
+    ]
+    if not hecho_violento and any(contiene_frase(t_norm, k) for k in organizaciones):
+        return "organizaciones_sociales"
+
+    if hecho_violento or any(contiene_frase(t_norm, k) for k in [
         "robo", "robaron", "asalto", "asaltaron", "entradera", "entraderas", "motochorro",
-        "motochorros", "homicidio", "asesinaron", "mataron", "balacera", "tiroteo", "baleado",
-        "baleada", "disparos", "tiros", "detuvieron", "delincuente", "delincuentes", "ladron",
+        "motochorros", "disparos", "tiros", "detuvieron", "delincuente", "delincuentes", "ladron",
         "ladrones", "saqueo", "saqueos", "narco", "narcotrafico", "cocaina", "arma de fuego",
-        "inseguridad", "secuestro", "comerciante asesinado", "crimen de", "asesinato"
+        "inseguridad", "secuestro", "comerciante asesinado", "intento de robo", "sospechoso",
+        "sospechosos", "incendiaron", "usurpacion", "toma de tierras", "desaparecido",
+        "desaparecida", "abuso sexual",
     ]):
         return "seguridad"
 
@@ -1347,14 +1534,6 @@ def resolver_eje_tematico_preciso(texto: str, categoria_sugerida: str = "") -> s
         "inauguracion reclamo", "visita del ministro", "legislatura bonaerense", "palacio municipal reclamo"
     ]):
         return "visita_autoridades"
-
-    if any(contiene_frase(t_norm, k) for k in [
-        "olla popular", "ollazo", "ollas vacias", "comedores comunitarios", "merenderos",
-        "emergencia alimentaria", "utep", "mte", "movimiento evita", "polo obrero",
-        "barrios de pie", "corriente clasista y combativa", "salario social", "volver al trabajo",
-        "por el pan en la mesa"
-    ]):
-        return "organizaciones_sociales"
 
     if any(contiene_frase(t_norm, k) for k in [
         "puestos de trabajo", "conflicto laboral", "despidos", "fabrica", "gremio", "sindicato",

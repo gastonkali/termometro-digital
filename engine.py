@@ -30,6 +30,7 @@ from config_pba import (
     PARTIDOS_PBA,
     STOPWORDS_ES,
     contiene_frase,
+    es_convocatoria_futura,
     es_exclusion_geografica,
     es_tema_excluido,
     es_texto_basura_ui,
@@ -331,7 +332,9 @@ def clasificar_hallazgo(
     if partido == "Provincia de Buenos Aires":
         partido = detectar_partido_en_texto(combinado, partido_objetivo)
     modificadores = detectar_modificadores_agenda(combinado)
-    es_convocatoria = len(modificadores) > 0
+    # Convocatoria = una medida que va a pasar ("convocan", "este sábado", "a las 18").
+    # "Hicieron un piquete" o "se manifestaron" es un reclamo reciente, no convocatoria.
+    es_convocatoria = len(modificadores) > 0 and es_convocatoria_futura(combinado)
     nombres_propios = extraer_nombres_propios(combinado)
 
     relevancia = 65

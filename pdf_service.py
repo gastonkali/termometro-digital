@@ -35,7 +35,11 @@ from config_pba import (
     HORAS_VENTANA_REPLICAS,
     MAX_HORAS_ANTIGUEDAD,
     describir_fecha,
+    es_convocatoria_futura,
+    es_reclamo_reciente,
     es_tema_excluido,
+    quitar_prefijo_medio,
+    tiene_reclamo_explicito,
     fecha_publicacion_iso,
     limpiar_texto_basura_redes,
     texto_sin_comentarios,
@@ -415,8 +419,14 @@ def clasificar_descartes_y_vigentes(hallazgos_raw: List[Dict[str, Any]]) -> Tupl
             continue
 
         # Asignar precisión geográfica y de eje
-        h["partido"] = resolver_partido_geografico_preciso(texto_sin_comentarios(h.get("texto", "") or h.get("titulo", "")), h.get("partido", ""))
+        h["partido"] = resolver_partido_geografico_preciso(quitar_prefijo_medio(texto_sin_comentarios(h.get("texto", "") or h.get("titulo", "")), h.get("autor", "")), h.get("partido", ""))
         h["categoria"] = resolver_eje_tematico_preciso(comb, h.get("categoria", ""))
+        # Convocatoria solo si la medida es a futuro (también corrige lo ya guardado);
+        # una movilización en pasado es un reclamo reciente.
+        cuerpo = f"{h.get('titulo', '')} {texto_sin_comentarios(h.get('texto', ''))}"
+        h["es_convocatoria"] = 1 if (h.get("es_convocatoria") and es_convocatoria_futura(cuerpo)) else 0
+        h["reclamo_reciente"] = es_reclamo_reciente(cuerpo)
+        h["reclamo_explicito"] = tiene_reclamo_explicito(cuerpo)
         vigentes.append(h)
 
     # Deduplicar descartados por URL o contenido (evita filas duplicadas en el Anexo del Consolidado)

@@ -22,11 +22,18 @@ import os
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+from actores_barrido import (
+    CUENTAS_INSTAGRAM_BARRIDO,
+    CUENTAS_X_BARRIDO,
+    GRUPOS_FACEBOOK_BARRIDO,
+    PAGINAS_FACEBOOK_BARRIDO,
+)
 from database import get_conn
-from config_pba import texto_sin_comentarios, es_url_publicacion_valida
+from config_pba import es_url_publicacion_valida, quitar_prefijo_medio, texto_sin_comentarios
 from pdf_service import (
     agrupar_con_contexto,
     clasificar_descartes_y_vigentes,
+    es_item_de_redes,
     imagen_de_hecho,
     imagen_embebida,
     recortar_texto_limpio,
@@ -40,6 +47,8 @@ EJE_LABELS = {
     "seguridad": "Seguridad",
     "justicia": "Justicia",
     "sociales_servicios": "Sociales / laboral",
+    "organizaciones_sociales": "Organizaciones sociales",
+    "visita_autoridades": "Visita oficial",
     "eventos_no_autorizados": "Eventos masivos",
     "imagen_institucional": "Imagen institucional",
 }
@@ -126,15 +135,83 @@ def _e(texto: Any) -> str:
     return html_lib.escape(str(texto or ""))
 
 
-def _nivel(c: Dict[str, Any]) -> tuple:
-    """(color, etiqueta) según convocatoria y clima del hecho."""
+def _tipo(c: Dict[str, Any]) -> str:
+    """Qué es el hecho, con los criterios de los skills de barrido:
+    convocatoria (a futuro) > reclamo vigente > reclamo reciente (ya realizado) >
+    hecho en seguimiento (hecho grave sin reclamo todavía) > contexto."""
+    items = c.get("hallazgos_relacionados") or []
     if c.get("es_convocatoria"):
-        return "rojo", "Convocatoria publicada"
-    return {
-        "EN ALERTA": ("rojo", "En alerta"),
-        "MODERADO": ("naranja", "Reclamo vigente"),
-        "BUENO": ("amarillo", "A tener en cuenta"),
-    }.get(c.get("clima_estado"), ("neutro", "Contexto"))
+        return "convocatoria"
+    reciente = any(it.get("reclamo_reciente") for it in items)
+    explicito = any(it.get("reclamo_explicito") for it in items)
+    # Las fuentes son las redes; los medios dan contexto. Un reclamo que solo aparece
+    # en medios (ningún posteo en X, Instagram o Facebook) queda como "Contexto".
+    solo_medios = _peso_fuentes(c) == 0
+    if explicito and not reciente:
+        return "contexto" if solo_medios else "vigente"
+    if reciente:
+        return "contexto" if solo_medios else "reciente"
+    # Los hechos graves sí se toman de medios (paso 1 del skill de seguridad)
+    if c.get("categoria") in ("seguridad", "justicia"):
+        return "seguimiento"
+    return "contexto"
+
+
+def _claves_actores() -> set:
+    """Cuentas de los skills de barrido (actores_barrido.py), normalizadas."""
+    claves = set()
+    for cuenta in list(CUENTAS_INSTAGRAM_BARRIDO) + list(CUENTAS_X_BARRIDO):
+        claves.add(str(cuenta).lower().lstrip("@"))
+    for d in list(PAGINAS_FACEBOOK_BARRIDO) + list(GRUPOS_FACEBOOK_BARRIDO):
+        url = (d.get("url") or "").lower().rstrip("/")
+        if url:
+            claves.add(url.split("facebook.com/")[-1])
+        if d.get("nombre"):
+            claves.add(d["nombre"].lower())
+    claves.discard("")
+    return claves
+
+
+_ACTORES = _claves_actores()
+
+
+def _es_de_actor(it: Dict[str, Any]) -> bool:
+    autor = (it.get("autor") or "").lower().lstrip("@").strip()
+    url = (it.get("url") or "").lower()
+    if autor and autor in _ACTORES:
+        return True
+    for red in ("instagram.com/", "x.com/", "twitter.com/", "facebook.com/"):
+        if red in url:
+            ruta = url.split(red, 1)[1].split("?")[0].rstrip("/")
+            if ruta.split("/")[0] in _ACTORES or ruta in _ACTORES or "/".join(ruta.split("/")[:2]) in _ACTORES:
+                return True
+    return False
+
+
+def _peso_fuentes(c: Dict[str, Any]) -> int:
+    """2 = publicó una cuenta de los skills (actores), 1 = hay posteos de redes,
+    0 = solo medios."""
+    items = c.get("hallazgos_relacionados") or []
+    if any(_es_de_actor(it) for it in items):
+        return 2
+    if any(es_item_de_redes(it) for it in items):
+        return 1
+    return 0
+
+
+_NIVELES = {
+    "convocatoria": ("rojo", "Convocatoria publicada"),
+    "vigente": ("naranja", "Reclamo vigente"),
+    "reciente": ("amarillo", "Reclamo reciente"),
+    "seguimiento": ("neutro", "Hecho en seguimiento"),
+    "contexto": ("neutro", "Contexto"),
+}
+_ORDEN_TIPOS = list(_NIVELES)
+
+
+def _nivel(c: Dict[str, Any]) -> tuple:
+    """(color, etiqueta) de la ficha."""
+    return _NIVELES[_tipo(c)]
 
 
 def _red(fuente: str) -> str:
@@ -216,9 +293,9 @@ def _plural(n: int, singular: str, plural: str) -> str:
 # ---------------------------------------------------------------- páginas
 
 def _portada(clusters, fichas, paginas_ficha, total_pags, total_rel, n_desc, titulo, edicion_str, ahora) -> str:
-    convs = [c for c in fichas if c.get("es_convocatoria")]
-    reclamos = [c for c in fichas if not c.get("es_convocatoria") and c.get("clima_estado") in ("EN ALERTA", "MODERADO")]
-    resto = [c for c in fichas if c not in convs and c not in reclamos]
+    por_tipo = {t: [c for c in fichas if _tipo(c) == t] for t in _ORDEN_TIPOS}
+    convs = por_tipo["convocatoria"]
+    reclamos = por_tipo["vigente"]
 
     partidos = list(dict.fromkeys(c.get("partido") or "PBA" for c in clusters))
     if len(partidos) > 4:
@@ -239,12 +316,22 @@ def _portada(clusters, fichas, paginas_ficha, total_pags, total_rel, n_desc, tit
             verbo = "se registra" if len(reclamos) == 1 else "se registran"
             pre = f"Además {verbo}" if convs else verbo.capitalize()
             partes.append(f"{pre} {_plural(len(reclamos), 'reclamo vigente', 'reclamos vigentes')} sin convocatoria publicada, en {p_rec}.")
-        if resto:
-            partes.append(f"Otros {len(resto)} hechos quedan a tener en cuenta." if len(resto) > 1 else "Otro hecho queda a tener en cuenta.")
+        recientes = por_tipo["reciente"]
+        if recientes:
+            p_rec = ", ".join(dict.fromkeys(_e(c["partido"]) for c in recientes[:4]))
+            partes.append(f"Hubo {_plural(len(recientes), 'movilización realizada', 'movilizaciones realizadas')} (reclamo reciente) en {p_rec}.")
+        seguimiento = por_tipo["seguimiento"]
+        if seguimiento:
+            p_seg = ", ".join(dict.fromkeys(_e(c["partido"]) for c in seguimiento[:4]))
+            partes.append(f"{_plural(len(seguimiento), 'hecho grave', 'hechos graves')} sin reclamo publicado por ahora ({p_seg}) quedan en seguimiento por posibles convocatorias."
+                          if len(seguimiento) > 1 else f"Un hecho grave sin reclamo publicado por ahora ({p_seg}) queda en seguimiento por posibles convocatorias.")
+        if por_tipo["contexto"]:
+            n_ctx = len(por_tipo["contexto"])
+            partes.append(f"{_plural(n_ctx, 'hecho', 'hechos')} de contexto.")
         if len(clusters) > len(fichas):
-            partes.append(f"Se muestran los {len(fichas)} más importantes de {len(clusters)} hechos vigentes.")
+            partes.append(f"Se muestran los {len(fichas)} más relevantes de {len(clusters)} hechos vigentes.")
         if n_desc:
-            partes.append(f"De {total_rel} publicaciones relevadas se descartaron {n_desc} por desactualizadas o fuera de alcance.")
+            partes.append(f"De {total_rel} publicaciones relevadas no se incluyeron {n_desc} (ver «Relevados y no incluidos»).")
         panorama = " ".join(partes)
 
     agenda = ""
@@ -334,12 +421,13 @@ def _ficha(c: Dict[str, Any], n: int, pag: int, total_pags: int, ahora: datetime
             f'<div><b>{_e(quien)}</b> ({_e(_red(it.get("fuente")))}): {_e(recortar_texto_limpio(que, 115))}</div></div>'
         )
 
-    if c.get("es_convocatoria"):
-        estado_txt = "convocatoria publicada"
-    elif c.get("clima_estado") in ("EN ALERTA", "MODERADO"):
-        estado_txt = "reclamo vigente, sin convocatoria publicada"
-    else:
-        estado_txt = "hecho a tener en cuenta, sin convocatoria publicada"
+    estado_txt = {
+        "convocatoria": "convocatoria publicada",
+        "vigente": "reclamo vigente, sin convocatoria publicada",
+        "reciente": "movilización ya realizada, sin nueva convocatoria publicada",
+        "seguimiento": "hecho grave sin reclamo ni convocatoria publicados; en seguimiento",
+        "contexto": "hecho de contexto, sin reclamo ni convocatoria publicados",
+    }[_tipo(c)]
     estado_txt += f". Repercusión {(rep_data.get('nivel') or '—').lower()}"
     if not coms:
         estado_txt += "; sin comentarios registrados"
@@ -386,6 +474,60 @@ def _pagina_publicaciones(c: Dict[str, Any], imgs: List[tuple], n: int, pag: int
 </section>"""
 
 
+ANEXO_FILAS_PRIMERA = 9
+ANEXO_FILAS_SIGUIENTES = 14
+ANEXO_MAX_PAGINAS = 2
+
+
+def _motivo_corto(motivo: str) -> str:
+    m = (motivo or "Descartada").strip().rstrip(".")
+    return m.replace("Fuera de tema: ", "")
+
+
+def _paginar_anexo(descartados: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    if not descartados:
+        return []
+    paginas = [descartados[:ANEXO_FILAS_PRIMERA]]
+    resto = descartados[ANEXO_FILAS_PRIMERA:]
+    while resto and len(paginas) < ANEXO_MAX_PAGINAS:
+        paginas.append(resto[:ANEXO_FILAS_SIGUIENTES])
+        resto = resto[ANEXO_FILAS_SIGUIENTES:]
+    return paginas
+
+
+def _pagina_anexo(descartados, filas, primera: bool, pag: int, total_pags: int) -> str:
+    """Relevados y no incluidos, con el motivo (como el anexo B de los skills)."""
+    resumen = ""
+    if primera:
+        conteo: Dict[str, int] = {}
+        for d in descartados:
+            clave = _motivo_corto(d.get("motivo")).split(":")[0]
+            conteo[clave] = conteo.get(clave, 0) + 1
+        items = "".join(f"<li>{_e(k)}: {v}</li>" for k, v in sorted(conteo.items(), key=lambda x: -x[1]))
+        resumen = f'<div class="sec"><h3>Motivos</h3><ul>{items}</ul></div>'
+    mostradas = sum(len(p) for p in _paginar_anexo(descartados))
+    filas_html = ""
+    for d in filas:
+        filas_html += (
+            f'<div class="r"><div class="d">{_e(recortar_texto_limpio((d.get("publicacion") or "Publicación").split(" (")[0], 34))}</div>'
+            f'<div>{_e(recortar_texto_limpio(quitar_prefijo_medio(d.get("contenido") or "", (d.get("publicacion") or "").split(" (")[0]), 110))} '
+            f'<span style="color:var(--tx3)">— {_e(_motivo_corto(d.get("motivo")))}</span></div></div>'
+        )
+    ultima = pag == total_pags
+    pie_extra = (f'<div class="vacio">Y {len(descartados) - mostradas} publicaciones más.</div>'
+                 if ultima and len(descartados) > mostradas else "")
+    titulo = "Relevados y no incluidos" if primera else "Relevados y no incluidos (continuación)"
+    return f"""
+<section class="page pubs">
+  <div class="kicker">Anexo</div>
+  <h2>{titulo}</h2>
+  {resumen}
+  <div class="sec crono"><h3>Publicaciones</h3>{filas_html}</div>
+  {pie_extra}
+  <div class="foot"><span></span><span>{pag} / {total_pags}</span></div>
+</section>"""
+
+
 # ---------------------------------------------------------------- armado
 
 def renderizar_fichas(
@@ -395,10 +537,17 @@ def renderizar_fichas(
     edicion_str: str,
     titulo: Optional[str] = None,
     ahora: Optional[datetime] = None,
+    descartados: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """HTML completo del reporte 9:16 a partir de los hechos ya agrupados."""
     ahora = ahora or datetime.now()
     titulo = titulo or "Termómetro Digital PBA"
+    # Orden del skill: convocatorias, reclamos vigentes, recientes, hechos en seguimiento
+    # y contexto; dentro de cada grupo, el orden de importancia de la agrupación.
+    orden = {id(c): i for i, c in enumerate(clusters)}
+    # Dentro de cada grupo van primero los hechos publicados por actores de los skills,
+    # después los que tienen posteos en redes y al final los que solo están en medios.
+    clusters = sorted(clusters, key=lambda c: (_ORDEN_TIPOS.index(_tipo(c)), -_peso_fuentes(c), orden[id(c)]))
     # Los más importantes, con lugar garantizado para lo que circula en redes
     fichas = seleccionar_hechos_tabla(clusters, cantidad=MAX_FICHAS, minimo_redes=2)
 
@@ -409,7 +558,9 @@ def renderizar_fichas(
     for tiene in con_pubs:
         paginas_ficha.append(pag)
         pag += 2 if tiene else 1
-    total_pags = pag - 1
+    descartados = descartados or []
+    paginas_anexo = _paginar_anexo(descartados)
+    total_pags = pag - 1 + len(paginas_anexo)
 
     secciones = [_portada(clusters, fichas, paginas_ficha, total_pags, total_relevadas,
                           total_descartadas, titulo, edicion_str, ahora)]
@@ -417,6 +568,8 @@ def renderizar_fichas(
         secciones.append(_ficha(c, i + 1, paginas_ficha[i], total_pags, ahora))
         if con_pubs[i]:
             secciones.append(_pagina_publicaciones(c, imagenes[i], i + 1, paginas_ficha[i] + 1, total_pags))
+    for k, filas in enumerate(paginas_anexo):
+        secciones.append(_pagina_anexo(descartados, filas, k == 0, pag + k, total_pags))
 
     return f"""<!DOCTYPE html>
 <html lang="es">
@@ -464,4 +617,5 @@ def generar_html_fichas(
         total_descartadas=len(descartados),
         edicion_str=edicion_str,
         titulo=titulo_custom,
+        descartados=descartados,
     )
