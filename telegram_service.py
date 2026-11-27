@@ -176,22 +176,30 @@ def enviar_alerta_telegram(
         except Exception:
             pass
 
-    # 3. Enviar Documento PDF adjunto directamente al celular
+    # 3. Enviar Documento PDF adjunto directamente al celular (con reintento y timeout amplio)
     if ruta_pdf and os.path.exists(ruta_pdf):
-        try:
-            url_doc = f"https://api.telegram.org/bot{token}/sendDocument"
-            with open(ruta_pdf, "rb") as f:
-                resp = requests.post(
-                    url_doc,
-                    data={
-                        "chat_id": cid,
-                        "caption": f"📄 Reporte PDF — Edición #{datos_edicion.get('edicion_id', 1)}"
-                    },
-                    files={"document": f},
-                    timeout=30
-                )
-            resultado["pdf_enviado"] = (resp.status_code == 200)
-        except Exception as e:
-            resultado["error_pdf"] = str(e)
+        url_doc = f"https://api.telegram.org/bot{token}/sendDocument"
+        for intento in range(2):
+            try:
+                with open(ruta_pdf, "rb") as f:
+                    resp = requests.post(
+                        url_doc,
+                        data={
+                            "chat_id": cid,
+                            "caption": f"📄 Reporte PDF — Edición #{datos_edicion.get('edicion_id', 1)}"
+                        },
+                        files={"document": f},
+                        timeout=90
+                    )
+                if resp.status_code == 200:
+                    resultado["pdf_enviado"] = True
+                    resultado.pop("error_pdf", None)
+                    break
+                resultado["error_pdf"] = f"HTTP {resp.status_code}: {resp.text[:200]}"
+            except Exception as e:
+                resultado["error_pdf"] = str(e)
+
+    if ruta_pdf and os.path.exists(ruta_pdf) and not resultado["pdf_enviado"]:
+        resultado["ok"] = False
 
     return resultado
