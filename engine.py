@@ -50,6 +50,11 @@ from database import (
     registrar_nombre_propio,
     registrar_palabra_candidata,
 )
+from actores_barrido import (
+    TERMINOS_ORGANIZACIONES_SOCIALES,
+    TERMINOS_VISITA_AUTORIDADES,
+    TERMINOS_RECLAMOS_SEGURIDAD,
+)
 
 # Cargar variables de entorno
 LOCAL_ENV = os.path.join(os.path.dirname(__file__), ".env")
@@ -592,6 +597,42 @@ def generar_matriz_consultas_multired(
             "tw_url": construir_url_twitter_search("vecinos autoconvocados Buenos Aires"),
             "ig_url": construir_url_instagram_search("VecinosEnAlerta"),
             "google_url": construir_url_google_search(f'{mods_sample} {anclaje_or}')
+        }
+    )
+
+    # 2b. Pasada Especializada: Organizaciones Sociales y Ollas Populares (skills-barrido)
+    dork_orgs = f'{redes_or} ("olla popular" OR "ollazo" OR "comedores" OR "UTEP" OR "MTE" OR "Polo Obrero" OR "Evita" OR "emergencia alimentaria") {anclaje_or} {exclusiones_dork}'
+    consultas.append(
+        {
+            "pasada": "organizaciones_sociales",
+            "categoria": "organizaciones_sociales",
+            "termino_base": "Ollas populares y Organizaciones Sociales",
+            "partido": "Provincia de Buenos Aires",
+            "anclaje": "conurbano / bonaerense",
+            "dork_web": dork_orgs,
+            "fb_search_query": "olla popular comedores UTEP MTE Buenos Aires",
+            "fb_url": construir_url_facebook_search("olla popular comedores UTEP MTE Buenos Aires"),
+            "tw_url": construir_url_twitter_search('("olla popular" OR UTEP OR "Polo Obrero") "Buenos Aires"'),
+            "ig_url": construir_url_instagram_search("OllaPopular"),
+            "google_url": construir_url_google_search('("olla popular" OR "emergencia alimentaria" OR UTEP) "Buenos Aires"')
+        }
+    )
+
+    # 2c. Pasada Especializada: Visita de Autoridades y Reclamos Oficiales (skills-barrido)
+    dork_visita = f'{redes_or} ("visita Kicillof" OR "visita del gobernador" OR "reclamo kicillof" OR "concentracion legislatura") {exclusiones_dork}'
+    consultas.append(
+        {
+            "pasada": "visita_autoridades",
+            "categoria": "visita_autoridades",
+            "termino_base": "Visitas oficiales y reclamos a autoridades",
+            "partido": "Provincia de Buenos Aires",
+            "anclaje": "bonaerense / oficial",
+            "dork_web": dork_visita,
+            "fb_search_query": "visita Kicillof reclamo vecinos Buenos Aires",
+            "fb_url": construir_url_facebook_search("visita Kicillof reclamo vecinos Buenos Aires"),
+            "tw_url": construir_url_twitter_search('(Kicillof OR gobernador) (visita OR reclamo OR marcha) "Buenos Aires"'),
+            "ig_url": construir_url_instagram_search("Kicillof"),
+            "google_url": construir_url_google_search('("visita Kicillof" OR "reclamo gobernador") "Buenos Aires"')
         }
     )
 

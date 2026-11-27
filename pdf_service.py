@@ -544,6 +544,8 @@ def generar_html_reporte(
         "seguridad": "seguridad",
         "justicia": "justicia",
         "sociales_servicios": "sociales / laboral",
+        "organizaciones_sociales": "organizaciones sociales",
+        "visita_autoridades": "visita oficial",
         "eventos_no_autorizados": "eventos masivos",
         "imagen_institucional": "imagen institucional"
     }

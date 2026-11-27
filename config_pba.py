@@ -17,6 +17,17 @@ import unicodedata
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set, Tuple
 
+# Integración de actores, páginas y cuentas OSINT verificadas desde skills-barrido
+from actores_barrido import (
+    CUENTAS_INSTAGRAM_BARRIDO,
+    PAGINAS_FACEBOOK_BARRIDO,
+    GRUPOS_FACEBOOK_BARRIDO,
+    CUENTAS_X_BARRIDO,
+    TERMINOS_RECLAMOS_SEGURIDAD,
+    TERMINOS_ORGANIZACIONES_SOCIALES,
+    TERMINOS_VISITA_AUTORIDADES,
+)
+
 # Los 135 partidos oficiales de la Provincia de Buenos Aires
 PARTIDOS_PBA: List[str] = [
     "Adolfo Alsina", "Adolfo Gonzales Chaves", "Alberti", "Almirante Brown",
@@ -443,6 +454,10 @@ def es_ataque_a_autoridad(texto: str) -> bool:
 CUENTAS_INSTAGRAM: List[str] = [
     "hechosyderecho",
 ]
+for _c in CUENTAS_INSTAGRAM_BARRIDO:
+    if _c not in CUENTAS_INSTAGRAM:
+        CUENTAS_INSTAGRAM.append(_c)
+
 CUENTAS_INSTAGRAM += [
     c.strip().lstrip("@") for c in os.getenv("TERMOMETRO_CUENTAS_IG", "").split(",")
     if c.strip() and c.strip().lstrip("@") not in CUENTAS_INSTAGRAM
@@ -521,7 +536,8 @@ CATEGORIAS_BASE: Dict[str, Dict[str, object]] = {
             "justicia por mano propia", "linchamiento", "lo lincharon",
             "le quemaron la casa al ladron", "pueblada por seguridad", "entraderas",
             "motochorros", "robo a mano armada", "tiraron a matar", "alarma vecinal",
-            "saqueo", "saqueos", "intento de saqueo", "intentos de saqueo", "saquear", "saquearon"
+            "saqueo", "saqueos", "intento de saqueo", "intentos de saqueo", "saquear", "saquearon",
+            "queremos vivir en paz", "ni uno más", "no queremos más muertes", "estamos cansados"
         ]
     },
     "justicia": {
@@ -534,7 +550,8 @@ CATEGORIAS_BASE: Dict[str, Dict[str, object]] = {
             "marcha de velas", "caravana por justicia", "suelta de globos",
             "que no quede impune", "cárcel común", "familiares piden justicia",
             "fiscalía reclamo", "liberaron al asesino", "femicidio",
-            "atropellado reclamo", "picada mortal justicia", "asesinato de"
+            "atropellado reclamo", "picada mortal justicia", "asesinato de",
+            "frente a tribunales", "familiares de la victima"
         ]
     },
     "sociales_servicios": {
@@ -552,6 +569,31 @@ CATEGORIAS_BASE: Dict[str, Dict[str, object]] = {
             "jubilados autoconvocados", "sin recolección", "inundación",
             "calles intransitables", "reclamo de vecinos por luz", "reclamo por agua",
             "falta de luz", "cuadrillas de edesur", "transformador quemado"
+        ]
+    },
+    "organizaciones_sociales": {
+        "nombre": "Organizaciones sociales y ollas",
+        "color": "#d97706",
+        "icono": "users",
+        "terminos": [
+            "olla popular", "ollazo", "ollas vacías", "comedores comunitarios",
+            "merenderos", "emergencia alimentaria", "salario social",
+            "Volver al Trabajo", "cooperativas", "ajuste en comedores",
+            "jornada nacional de lucha", "por el pan en la mesa", "navidad sin hambre",
+            "UTEP", "MTE", "Movimiento Evita", "Polo Obrero", "Barrios de Pie",
+            "Corriente Clasista y Combativa", "CCC", "Libres del Sur", "FOL"
+        ]
+    },
+    "visita_autoridades": {
+        "nombre": "Visita de autoridades y actos oficiales",
+        "color": "#7c3aed",
+        "icono": "landmark",
+        "terminos": [
+            "visita kicillof", "visita del gobernador", "lo esperamos kicillof",
+            "acto oficial reclamo", "visita de ministro", "inauguración reclamo",
+            "recorrida oficial reclamo", "escrache funcionario", "concentración casa de gobierno",
+            "reclamo legislatura bonaerense", "reclamo en el palacio municipal",
+            "docentes reclamo kicillof", "estatales reclamo gobernador"
         ]
     },
     "eventos_no_autorizados": {
@@ -1299,6 +1341,20 @@ def resolver_eje_tematico_preciso(texto: str, categoria_sugerida: str = "") -> s
         "inseguridad", "secuestro", "comerciante asesinado", "crimen de", "asesinato"
     ]):
         return "seguridad"
+
+    if any(contiene_frase(t_norm, k) for k in [
+        "visita de kicillof", "visita del gobernador", "lo esperamos kicillof", "acto oficial",
+        "inauguracion reclamo", "visita del ministro", "legislatura bonaerense", "palacio municipal reclamo"
+    ]):
+        return "visita_autoridades"
+
+    if any(contiene_frase(t_norm, k) for k in [
+        "olla popular", "ollazo", "ollas vacias", "comedores comunitarios", "merenderos",
+        "emergencia alimentaria", "utep", "mte", "movimiento evita", "polo obrero",
+        "barrios de pie", "corriente clasista y combativa", "salario social", "volver al trabajo",
+        "por el pan en la mesa"
+    ]):
+        return "organizaciones_sociales"
 
     if any(contiene_frase(t_norm, k) for k in [
         "puestos de trabajo", "conflicto laboral", "despidos", "fabrica", "gremio", "sindicato",

@@ -1123,6 +1123,15 @@ def extraer_posteos_facebook_grupos(page, max_grupos: int = 4, max_items_por_gru
         {"nombre": "Grand Bourg Conectado", "url": "https://www.facebook.com/groups/260758975428433/", "categoria": "seguridad"},
         {"nombre": "Budge Conectado", "url": "https://www.facebook.com/groups/budgeconectado/", "categoria": "seguridad"},
     ]
+    # Incorporar grupos vecinales y comunitarios verificados de skills-barrido
+    try:
+        from actores_barrido import GRUPOS_FACEBOOK_BARRIDO
+        for gb in GRUPOS_FACEBOOK_BARRIDO:
+            if gb not in GRUPOS_USUARIO:
+                GRUPOS_USUARIO.append(gb)
+    except Exception:
+        pass
+
     # Sumar todos los grupos de los que sos miembro (lista actualizada una vez por día)
     ya = {_clave_grupo(g["url"]) for g in GRUPOS_USUARIO}
     for g in descubrir_grupos_facebook(page):
@@ -1470,6 +1479,124 @@ def extraer_posteos_referentes_policiales(page, max_items: int = 5) -> List[Dict
             print(f"  [Aviso Referentes Policiales]: {e}")
 
     return posteos
+
+
+def extraer_posteos_facebook_paginas(page, max_paginas: int = 4, max_items_por_pagina: int = 2) -> List[Dict[str, Any]]:
+    """
+    Monitorea de forma rotativa las páginas de Facebook verificadas de medios locales,
+    asambleas vecinales y organizaciones sociales (incorporadas de skills-barrido).
+    """
+    from engine import detectar_partido_en_texto
+    from config_pba import es_exclusion_geografica, es_texto_espanol, es_texto_basura_ui
+    try:
+        from actores_barrido import PAGINAS_FACEBOOK_BARRIDO
+    except Exception:
+        return []
+
+    if not PAGINAS_FACEBOOK_BARRIDO:
+        return []
+
+    state_file = os.path.join(BASE_DIR, "scraper_state.json")
+    idx_p = 0
+    if os.path.exists(state_file):
+        try:
+            with open(state_file, "r", encoding="utf-8") as sf:
+                sdata = json.load(sf)
+                idx_p = sdata.get("proxima_pagina_fb_idx", 0) % len(PAGINAS_FACEBOOK_BARRIDO)
+        except Exception:
+            idx_p = 0
+
+    lote = [PAGINAS_FACEBOOK_BARRIDO[(idx_p + i) % len(PAGINAS_FACEBOOK_BARRIDO)] for i in range(min(max_paginas, len(PAGINAS_FACEBOOK_BARRIDO)))]
+    try:
+        sdata = {}
+        if os.path.exists(state_file):
+            with open(state_file, "r", encoding="utf-8") as sf:
+                sdata = json.load(sf)
+        sdata["proxima_pagina_fb_idx"] = (idx_p + len(lote)) % len(PAGINAS_FACEBOOK_BARRIDO)
+        with open(state_file, "w", encoding="utf-8") as sf:
+            json.dump(sdata, sf, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+    posteos = []
+    for p_info in lote:
+        try:
+            p_nombre = p_info["nombre"]
+            p_url = p_info["url"]
+            p_partido = p_info.get("partido", "Provincia de Buenos Aires")
+            print(f"  📄 Explorando página de Facebook: {p_nombre} ({p_partido})...")
+            page.goto(p_url, timeout=30000, wait_until="domcontentloaded")
+            time.sleep(3)
+            for _ in range(2):
+                page.mouse.wheel(0, 1200)
+                time.sleep(1.2)
+
+            _inyectar_helpers_js(page)
+            items = page.evaluate(r"""() => {
+                const out = [];
+                const feed = document.querySelector('div[role="feed"]') || document.body;
+                const cards = Array.from(feed.querySelectorAll('div[role="article"]'));
+                for (const card of cards.slice(0, 6)) {
+                    let msg = '';
+                    for (const d of Array.from(card.querySelectorAll('div[dir="auto"]'))) {
+                        const t = (d.innerText || '').trim();
+                        if (t.length > 25 && !t.includes('ordenar feed') && !t.startsWith('Facebook') && !t.includes('Escribe un comentario')) {
+                            if (t.length > msg.length) msg = t;
+                        }
+                    }
+                    if (!msg || msg.length < 25) continue;
+                    let autor = '';
+                    const h_a = card.querySelector('h2 a, h3 a, h4 a, strong a, a[role="link"]');
+                    if (h_a) autor = (h_a.innerText || '').trim();
+                    const _uf = window.__td ? window.__td.urlYFecha(card) : {url: '', fecha: ''};
+                    out.push({
+                        texto: msg,
+                        autor: autor,
+                        directUrl: _uf.url,
+                        fechaTxt: _uf.fecha
+                    });
+                }
+                return out;
+            }""")
+
+            items_pag = 0
+            for it in items:
+                txt = it.get("texto", "").strip()
+                autor = it.get("autor") or p_nombre
+                if not txt or len(txt) < 25 or not es_texto_espanol(txt) or es_exclusion_geografica(txt) or es_texto_basura_ui(autor, txt):
+                    continue
+                url_fin = limpiar_url_fb(it.get("directUrl"))
+                if not url_fin or not es_url_publicacion_valida(url_fin):
+                    continue
+                fecha_iso, es_vieja = _resolver_fecha(it.get("fechaTxt"), url_fin, txt)
+                if es_vieja:
+                    continue
+                if not fecha_iso:
+                    fecha_iso = datetime.now().isoformat(timespec="seconds")
+                partido_det = detectar_partido_en_texto(f"{autor} {txt}", partido_por_defecto=p_partido)
+                primer_renglon = _primer_renglon_limpio(txt)
+                posteos.append({
+                    "fuente": f"Facebook ({p_nombre})",
+                    "autor": autor,
+                    "url": url_fin,
+                    "titulo": f"{autor}: {primer_renglon}",
+                    "texto": txt,
+                    "comentarios": [],
+                    "imagen_url": "",
+                    "partido": partido_det,
+                    "categoria": p_info.get("tipo", "seguridad"),
+                    "pasada": "paginas_difusores",
+                    "fecha_publicacion": fecha_iso,
+                    "metricas": {}
+                })
+                items_pag += 1
+                if items_pag >= max_items_por_pagina:
+                    break
+        except Exception as e:
+            print(f"  [Aviso Página {p_info.get('nombre')}]: {e}")
+
+    return posteos
+
 
 FEEDS_FACEBOOK_SEGUIDOS = [
     # (url, etiqueta de la fuente)
@@ -1937,7 +2064,30 @@ def extraer_posteos_instagram_cuentas(page, cuentas: Optional[List[str]] = None,
                             es_exclusion_geografica, es_tema_excluido, es_texto_espanol)
     from engine import detectar_partido_en_texto
 
-    cuentas = cuentas or CUENTAS_INSTAGRAM
+    if cuentas is None:
+        cuentas_todas = CUENTAS_INSTAGRAM
+        state_file = os.path.join(BASE_DIR, "scraper_state.json")
+        idx_ig = 0
+        if os.path.exists(state_file):
+            try:
+                with open(state_file, "r", encoding="utf-8") as sf:
+                    sdata = json.load(sf)
+                    idx_ig = sdata.get("proximo_ig_idx", 0) % len(cuentas_todas)
+            except Exception:
+                idx_ig = 0
+        max_cuentas_ciclo = int(os.getenv("TERMOMETRO_CUENTAS_IG_POR_CICLO", "8"))
+        cuentas = [cuentas_todas[(idx_ig + i) % len(cuentas_todas)] for i in range(min(max_cuentas_ciclo, len(cuentas_todas)))]
+        try:
+            sdata = {}
+            if os.path.exists(state_file):
+                with open(state_file, "r", encoding="utf-8") as sf:
+                    sdata = json.load(sf)
+            sdata["proximo_ig_idx"] = (idx_ig + len(cuentas)) % len(cuentas_todas)
+            with open(state_file, "w", encoding="utf-8") as sf:
+                json.dump(sdata, sf, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+
     max_por_cuenta = max_por_cuenta or MAX_POSTS_POR_CUENTA_IG
     posteos: List[Dict[str, Any]] = []
 
@@ -2130,6 +2280,11 @@ def ejecutar_ciclo_recoleccion(headless: bool = False, max_consultas: int = 6):
         print("\n👮 Monitoreando referentes policiales y Virginia Luján Sosa...")
         fb_sosa = extraer_posteos_referentes_policiales(page_fb, max_items=4)
         total_recolectados.extend(fb_sosa)
+
+        # Fase 2.6: Páginas de Facebook verificadas (skills-barrido: medios, difusores vecinales y org. sociales)
+        print("\n📄 Explorando páginas de medios y difusores locales en Facebook (skills-barrido)...")
+        fb_pags = extraer_posteos_facebook_paginas(page_fb, max_paginas=int(os.getenv("TERMOMETRO_MAX_PAGINAS_FB", "4")))
+        total_recolectados.extend(fb_pags)
 
         # Fase 3: Feed de amigos y contactos en Facebook
         print("\n👤 Explorando feed de amigos y contactos en Facebook...")
