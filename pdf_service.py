@@ -1488,14 +1488,26 @@ def compilar_pdf_desde_html(html_content: str, ruta_salida_pdf: str) -> bool:
         "--headless=new",
         "--disable-gpu",
         "--no-pdf-header-footer",
+        # Da tiempo a que carguen las imágenes remotas de las publicaciones
+        "--virtual-time-budget=8000",
         f"--print-to-pdf={ruta_salida_pdf}",
         temp_html,
     ]
 
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
-        if os.path.exists(ruta_salida_pdf) and os.path.getsize(ruta_salida_pdf) > 1000:
-            return True
+        if os.path.exists(ruta_salida_pdf):
+            os.remove(ruta_salida_pdf)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        # En Windows, msedge.exe/chrome.exe vuelve enseguida y el PDF se escribe unos
+        # segundos después: se espera hasta que exista y su tamaño deje de cambiar.
+        import time
+        tam_anterior, limite = -1, time.time() + 45
+        while time.time() < limite:
+            tam = os.path.getsize(ruta_salida_pdf) if os.path.exists(ruta_salida_pdf) else -1
+            if tam > 1000 and tam == tam_anterior:
+                return True
+            tam_anterior = tam
+            time.sleep(1)
         print(f"[PDF] Error: {res.stderr}")
         return False
     except Exception as e:
@@ -1503,8 +1515,20 @@ def compilar_pdf_desde_html(html_content: str, ruta_salida_pdf: str) -> bool:
         return False
 
 
+def formato_pdf() -> str:
+    """'fichas' (9:16, mismo diseño que el skill de barrido) o 'a4' (tablas)."""
+    return "a4" if os.getenv("TERMOMETRO_FORMATO_PDF", "fichas").strip().lower() == "a4" else "fichas"
+
+
+def generar_html_segun_formato(edicion_id: Optional[int] = None, horas_atras: Optional[int] = None) -> str:
+    if formato_pdf() == "a4":
+        return generar_html_reporte(edicion_id=edicion_id, horas_atras=horas_atras)
+    from pdf_fichas import generar_html_fichas
+    return generar_html_fichas(edicion_id=edicion_id, horas_atras=horas_atras)
+
+
 def crear_reporte_pdf_edicion(edicion_id: int) -> Optional[str]:
-    html = generar_html_reporte(edicion_id=edicion_id)
+    html = generar_html_segun_formato(edicion_id=edicion_id)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     pdf_path = os.path.join(PDF_OUTPUT_DIR, f"Alerta_Termometro_PBA_Edicion_{edicion_id}_{timestamp}.pdf")
     pdf_path_latest = os.path.join(PDF_OUTPUT_DIR, "Alerta_Termometro_PBA_Ultima.pdf")
@@ -1520,7 +1544,7 @@ def crear_reporte_pdf_edicion(edicion_id: int) -> Optional[str]:
 
 
 def crear_reporte_pdf_ultimas_horas(horas_atras: int = 12) -> Optional[str]:
-    html = generar_html_reporte(horas_atras=horas_atras)
+    html = generar_html_segun_formato(horas_atras=horas_atras)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     pdf_path = os.path.join(PDF_OUTPUT_DIR, f"Reporte_Matutino_PBA_{horas_atras}h_{timestamp}.pdf")
     pdf_path_latest = os.path.join(PDF_OUTPUT_DIR, "Alerta_Termometro_PBA_Ultima.pdf")
@@ -1539,7 +1563,5 @@ if __name__ == "__main__":
     conn = get_conn()
     ult = conn.execute("SELECT MAX(id) AS m FROM ediciones").fetchone()["m"] or 1
     conn.close()
-    nombres_rows = [dict(r) for r in nombres_rows_raw]
-    propuestas_rows = [dict(r) for r in propuestas_rows_raw]
     pdf = crear_reporte_pdf_edicion(ult)
     print(f"PDF generado: {pdf}")
