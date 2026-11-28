@@ -4,6 +4,33 @@ Sistema de monitoreo territorial, alertas tempranas y agenda vecinal sobre **Fac
 
 ---
 
+## 🖥️ Uso Autónomo como Software Ejecutable (Sin IA)
+
+El sistema está diseñado para funcionar de manera **100 % autónoma e independiente**, sin necesidad de ningún chat de IA.
+
+### En Windows (Doble Clic)
+1. **Instalación en 1 paso:** Hacé doble clic en `INSTALAR_DEPENDENCIAS.bat`. Creará el entorno virtual, instalará los paquetes y descargará Chromium automáticamente.
+2. **Centro de Control Ejecutable:** Hacé doble clic en `INICIAR_TERMOMETRO.bat` o ejecutá:
+   ```cmd
+   python launcher.py
+   ```
+   Se abrirá el Centro de Control interactivo con las opciones:
+   * **[1] 🚀 Ejecutar barrido territorial ahora:** Realiza una pasada inmediata por Facebook, X, Instagram y Google Noticias.
+   * **[2] ⏱️ Iniciar monitoreo continuo (Daemon):** Bucle automático que barre periódicamente (ej: cada 60 min) en segundo plano.
+   * **[3] 🔑 Conectar sesiones de redes:** Abre el navegador visible para que inicies sesión una sola vez en Facebook, X e Instagram.
+   * **[4] 📄 Generar y abrir reporte ejecutivo PDF:** Compila y abre automáticamente el reporte ejecutivo de 1 a 2 páginas.
+   * **[5] 🌐 Iniciar Panel Web:** Levanta el dashboard local en `http://localhost:5055` y lo abre en tu navegador.
+   * **[6] 📲 Enviar alertas:** Dispara alertas a WhatsApp y Telegram con el PDF adjunto.
+
+### Compilar a archivo `.exe` independiente (PyInstaller)
+Podés generar un archivo ejecutable binario para Windows corriendo:
+```cmd
+compilar_ejecutable.bat
+```
+El ejecutable resultante quedará en `dist/TermometroDigital/TermometroDigital.exe`.
+
+---
+
 ## 🚀 Despliegue en Servidor
 
 ### 1. Clonar el repositorio e instalar dependencias
